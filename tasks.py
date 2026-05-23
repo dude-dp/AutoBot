@@ -11,10 +11,10 @@ import sys
 # --- CONFIGURATION ---
 CAPITAL_LIMIT = 40000
 MAX_PREMIUM = 100
-QUANTITY = 25 # ⚠️ PRO TIP: Change this to 25 (1 lot) for your very first Monday test, then scale to 325!
+QUANTITY = 25
 TARGET_POINTS = 1.5
 STOP_LOSS_POINTS = 2.0
-MAX_DAILY_LOSS = -1500
+MAX_DAILY_LOSS = -1000
 
 # Global State
 state = {
