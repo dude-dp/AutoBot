@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Options Scalper Control Center</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white p-8 font-sans">
+
+    <div class="max-w-5xl mx-auto">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold text-blue-400">⚡ Scalper Control Center</h1>
+            <div id="status-badge" class="px-4 py-2 rounded font-bold bg-green-600">BOT ACTIVE</div>
+        </div>
+
+        <!-- Top Stats Row -->
+        <div class="grid grid-cols-4 gap-4 mb-8">
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                <p class="text-gray-400 text-sm">Nifty Spot</p>
+                <p id="nifty-ltp" class="text-2xl font-mono">0.00</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                <p class="text-gray-400 text-sm">5m Candle Open</p>
+                <p id="candle-open" class="text-2xl font-mono text-blue-400">0.00</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                <p class="text-gray-400 text-sm">CE Premium</p>
+                <p id="ce-ltp" class="text-2xl font-mono text-green-400">0.00</p>
+            </div>
+            <div class="bg-gray-800 p-4 rounded-lg border border-gray-700">
+                <p class="text-gray-400 text-sm">PE Premium</p>
+                <p id="pe-ltp" class="text-2xl font-mono text-red-400">0.00</p>
+            </div>
+        </div>
+
+        <!-- Middle Row: Trade Status & Controls -->
+        <div class="grid grid-cols-2 gap-8 mb-8">
+            <!-- Active Trade Panel -->
+            <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
+                <h2 class="text-xl font-bold border-b border-gray-700 pb-2 mb-4">Active Position</h2>
+                <div id="no-position" class="text-gray-500 italic">No active trades. Waiting for setup...</div>
+                <div id="active-position" class="hidden">
+                    <p class="text-lg">Type: <span id="pos-type" class="font-bold"></span></p>
+                    <p class="text-lg">Buy Price: ₹<span id="buy-price" class="font-mono">0.00</span></p>
+                    <p class="text-lg mt-2">Current PnL: <span id="unrealized-pnl" class="font-mono font-bold text-2xl">0.00</span> points</p>
+                </div>
+            </div>
+
+            <!-- Controls Panel -->
+            <div class="bg-gray-800 p-6 rounded-lg border border-gray-700">
+                <h2 class="text-xl font-bold border-b border-gray-700 pb-2 mb-4">Manual Controls</h2>
+                
+                <div class="flex items-center justify-between mb-6">
+                    <label class="text-lg">Trade Quantity:</label>
+                    <div class="flex items-center space-x-2">
+                        <input type="number" id="qty-input" value="25" class="bg-gray-700 text-white p-2 rounded w-24 text-center font-mono">
+                        <button onclick="updateConfig('quantity')" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">Update</button>
+                    </div>
+                </div>
+
+                <div class="flex space-x-4">
+                    <button onclick="toggleBot()" id="toggle-btn" class="flex-1 bg-yellow-600 hover:bg-yellow-700 px-4 py-3 rounded font-bold">PAUSE BOT</button>
+                    <!-- Emergency Kill flattens the position AND pauses the bot -->
+                    <button onclick="killSwitch()" class="flex-1 bg-red-600 hover:bg-red-700 px-4 py-3 rounded font-bold">🚨 PANIC SELL & HALT</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // WebSocket Connection to Python Backend
+        const ws = new WebSocket("ws://localhost:8000/ws");
+        
+        ws.onmessage = function(event) {
+            const state = JSON.parse(event.data);
+            
+            // Update Prices
+            document.getElementById("nifty-ltp").innerText = state.nifty_ltp.toFixed(2);
+            document.getElementById("candle-open").innerText = state.candle_open_price.toFixed(2);
+            document.getElementById("ce-ltp").innerText = state.ce_ltp.toFixed(2);
+            document.getElementById("pe-ltp").innerText = state.pe_ltp.toFixed(2);
+            
+            // Update Bot Status
+            const badge = document.getElementById("status-badge");
+            const toggleBtn = document.getElementById("toggle-btn");
+            if(state.bot_active) {
+                badge.innerText = "BOT ACTIVE";
+                badge.className = "px-4 py-2 rounded font-bold bg-green-600";
+                toggleBtn.innerText = "PAUSE BOT";
+                toggleBtn.className = "flex-1 bg-yellow-600 hover:bg-yellow-700 px-4 py-3 rounded font-bold";
+            } else {
+                badge.innerText = "BOT PAUSED";
+                badge.className = "px-4 py-2 rounded font-bold bg-gray-600";
+                toggleBtn.innerText = "RESUME BOT";
+                toggleBtn.className = "flex-1 bg-green-600 hover:bg-green-700 px-4 py-3 rounded font-bold";
+            }
+
+            // Update Position Info
+            if(state.in_position) {
+                document.getElementById("no-position").classList.add("hidden");
+                document.getElementById("active-position").classList.remove("hidden");
+                
+                document.getElementById("pos-type").innerText = state.position_type;
+                document.getElementById("pos-type").className = state.position_type === 'CE' ? 'text-green-400 font-bold' : 'text-red-400 font-bold';
+                document.getElementById("buy-price").innerText = state.buy_price.toFixed(2);
+                
+                // Calculate live PnL points
+                let currentPremium = state.position_type === 'CE' ? state.ce_ltp : state.pe_ltp;
+                let pnl = currentPremium - state.buy_price;
+                let pnlEl = document.getElementById("unrealized-pnl");
+                pnlEl.innerText = pnl.toFixed(2);
+                pnlEl.className = pnl >= 0 ? "font-mono font-bold text-2xl text-green-400" : "font-mono font-bold text-2xl text-red-400";
+            } else {
+                document.getElementById("no-position").classList.remove("hidden");
+                document.getElementById("active-position").classList.add("hidden");
+            }
+        };
+
+        // Control Functions via REST API
+        async function updateConfig(key) {
+            const val = document.getElementById("qty-input").value;
+            await fetch(`/api/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ key: key, value: parseFloat(val) })
+            });
+            alert("Quantity Updated to " + val);
+        }
+
+        async function toggleBot() {
+            await fetch(`/api/toggle`, { method: 'POST' });
+        }
+
+        async function killSwitch() {
+            if(confirm("Are you sure? This will sell open positions at market price and halt the bot!")) {
+                await fetch(`/api/panic`, { method: 'POST' });
+                alert("Panic protocol initiated.");
+            }
+        }
+    </script>
+</body>
+</html>
