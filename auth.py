@@ -5,10 +5,15 @@ import requests
 import _thread
 import sys
 
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # --- UPSTOX APP CREDENTIALS ---
-API_KEY = "c626462f-0d08-4081-88b5-15d0ca7cfdb1"
-API_SECRET = "6w47uine0b"
-REDIRECT_URI = "http://localhost:8080/"  # You MUST set this exactly in your Upstox App Dashboard
+API_KEY = os.getenv("UPSTOX_API_KEY")
+API_SECRET = os.getenv("UPSTOX_API_SECRET")
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8080/")  # You MUST set this exactly in your Upstox App Dashboard
 
 class AuthHandler(BaseHTTPRequestHandler):
     def do_GET(self):

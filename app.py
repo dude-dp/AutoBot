@@ -42,11 +42,16 @@ state = {
     "activity_log": [],  # ring buffer of last 50 events
 }
 
-CAPITAL_LIMIT = 40000
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+CAPITAL_LIMIT = float(os.getenv("CAPITAL_LIMIT", 40000))
 MAX_PREMIUM = 100
 TARGET_POINTS = 1.5
 STOP_LOSS_POINTS = 2.0
-MAX_DAILY_LOSS = -1500
+MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", -1500))
 
 NIFTY_SPOT_TOKEN = "NSE_INDEX|Nifty 50"
 CE_TOKEN = ""
