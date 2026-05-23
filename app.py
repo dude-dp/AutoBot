@@ -24,6 +24,11 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+from supabase import create_client, Client
+url: str = os.getenv("SUPABASE_URL")
+key: str = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(url, key) if url and key else None
+
 # ==========================================
 # 1. CONFIGURATION & STATE
 # ==========================================
@@ -179,78 +184,89 @@ async def panic_sell():
 # (Keeping your existing history & stats endpoints here, unmodified)
 @app.get("/api/history/daily")
 async def get_daily_pnl_history():
-    if not db_connection: return JSONResponse({"data": []})
-    cursor = db_connection.cursor()
+    if not supabase: return JSONResponse({"data": []})
     thirty_days_ago = (date.today() - timedelta(days=30)).isoformat()
-    cursor.execute("""SELECT trade_date, SUM(pnl), COUNT(*), SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END) FROM trade_log WHERE trade_date >= ? GROUP BY trade_date ORDER BY trade_date""", (thirty_days_ago,))
-    rows = cursor.fetchall()
-    return JSONResponse({"data": [{"date": r[0], "pnl": round(r[1], 2), "trades": r[2], "wins": r[3]} for r in rows]})
+    res = supabase.table('trade_log').select('*').gte('trade_date', thirty_days_ago).execute()
+    agg = {}
+    for t in res.data:
+        d = t['trade_date']
+        if d not in agg: agg[d] = {"date": d, "pnl": 0.0, "trades": 0, "wins": 0}
+        agg[d]["pnl"] += t.get('pnl', 0)
+        agg[d]["trades"] += 1
+        if t.get('pnl', 0) > 0: agg[d]["wins"] += 1
+    data = list(agg.values())
+    for d in data: d["pnl"] = round(d["pnl"], 2)
+    data.sort(key=lambda x: x["date"])
+    return JSONResponse({"data": data})
 
 @app.get("/api/history/trades")
 async def get_recent_trades():
-    if not db_connection: return JSONResponse({"data": []})
-    cursor = db_connection.cursor()
-    cursor.execute("SELECT id, trade_date, time, position_type, buy_price, sell_price, pnl FROM trade_log ORDER BY id DESC LIMIT 50")
-    cols = ["id", "date", "time", "type", "buy", "sell", "pnl"]
-    return JSONResponse({"data": [dict(zip(cols, r)) for r in cursor.fetchall()]})
+    if not supabase: return JSONResponse({"data": []})
+    res = supabase.table('trade_log').select('*').order('id', desc=True).limit(50).execute()
+    data = []
+    for t in res.data:
+        data.append({"id": t['id'], "date": t['trade_date'], "time": t['time'], "type": t['position_type'], "buy": t['buy_price'], "sell": t['sell_price'], "pnl": t['pnl']})
+    return JSONResponse({"data": data})
 
 @app.get("/api/stats")
 async def get_stats():
-    if not db_connection: return JSONResponse({})
-    cursor = db_connection.cursor()
-    cursor.execute("SELECT COUNT(*), SUM(pnl), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) FROM trade_log")
-    total_trades, total_pnl, total_wins = cursor.fetchone()
-    total_trades = total_trades or 0
-    total_pnl = round(total_pnl or 0, 2)
+    if not supabase: return JSONResponse({})
+    res = supabase.table('trade_log').select('pnl').execute()
+    trades = res.data
+    total_trades = len(trades)
+    total_pnl = sum(t.get('pnl', 0) for t in trades)
+    total_wins = sum(1 for t in trades if t.get('pnl', 0) > 0)
     win_rate = round((total_wins / total_trades * 100) if total_trades else 0, 1)
-    return JSONResponse({"total_trades": total_trades, "total_pnl": total_pnl, "win_rate": win_rate})
+    return JSONResponse({"total_trades": total_trades, "total_pnl": round(total_pnl, 2), "win_rate": win_rate})
 
 # ==========================================
 # 3. DATABASE & RISK LOGIC
 # ==========================================
-def setup_database():
-    conn = sqlite3.connect('trades.db', check_same_thread=False)
-    cursor = conn.cursor()
-    cursor.execute('''CREATE TABLE IF NOT EXISTS trade_log (id INTEGER PRIMARY KEY AUTOINCREMENT, trade_date TEXT, time TEXT, position_type TEXT, buy_price REAL, sell_price REAL, pnl REAL)''')
-    try: cursor.execute("ALTER TABLE trade_log ADD COLUMN time TEXT")
-    except: pass
-    conn.commit()
-    return conn
-
-def check_daily_drawdown(conn):
-    cursor = conn.cursor()
-    cursor.execute("SELECT SUM(pnl) FROM trade_log WHERE trade_date = ?", (date.today().isoformat(),))
-    daily_pnl = cursor.fetchone()[0] or 0.0
-    state["daily_pnl"] = round(daily_pnl, 2)
-    if daily_pnl <= MAX_DAILY_LOSS:
+def check_daily_drawdown():
+    if state["daily_pnl"] <= MAX_DAILY_LOSS:
         send_telegram_alert("🚨 MAX DAILY DRAWDOWN HIT. BOT HALTED.")
         return True
     return False
 
-def load_todays_stats(conn):
-    cursor = conn.cursor()
-    cursor.execute("SELECT SUM(pnl), COUNT(*), SUM(CASE WHEN pnl>0 THEN 1 ELSE 0 END) FROM trade_log WHERE trade_date=?", (date.today().isoformat(),))
-    row = cursor.fetchone()
-    state["daily_pnl"] = round(row[0] or 0.0, 2)
-    state["daily_trades"] = row[1] or 0
-    state["daily_wins"] = row[2] or 0
+def load_todays_stats():
+    if not supabase: return
+    try:
+        res = supabase.table('trade_log').select('*').eq('trade_date', date.today().isoformat()).execute()
+        trades = res.data
+        state["daily_pnl"] = round(sum(t.get('pnl', 0) for t in trades), 2)
+        state["daily_trades"] = len(trades)
+        state["daily_wins"] = sum(1 for t in trades if t.get('pnl', 0) > 0)
+    except Exception as e:
+        logging.error(f"Failed to load today's stats from Supabase: {e}")
 
-def log_trade(conn, position_type, buy_price, sell_price, quantity):
+def log_trade(position_type, buy_price, sell_price, quantity):
     pnl = round((sell_price - buy_price) * quantity, 2)
+    today = date.today().isoformat()
     now_time = datetime.now().strftime("%H:%M:%S")
-    conn.cursor().execute("INSERT INTO trade_log (trade_date, time, position_type, buy_price, sell_price, pnl) VALUES (?,?,?,?,?,?)", (date.today().isoformat(), now_time, position_type, buy_price, sell_price, pnl))
-    conn.commit()
+    
+    # Push the trade directly to the cloud
+    if supabase:
+        try:
+            supabase.table('trade_log').insert({
+                "trade_date": today,
+                "time": now_time,
+                "position_type": position_type,
+                "buy_price": buy_price,
+                "sell_price": sell_price,
+                "pnl": pnl
+            }).execute()
+        except Exception as e:
+            logging.error(f"Failed to sync trade to Supabase: {e}")
 
     state["daily_pnl"] = round(state["daily_pnl"] + pnl, 2)
     state["daily_trades"] += 1
     
     if pnl > 0:
         state["daily_wins"] += 1
-        state["consecutive_losses"] = 0 # Reset Tilt Breaker
+        state["consecutive_losses"] = 0
     else:
         state["consecutive_losses"] += 1
         
-    # Tilt Breaker Check
     if state["consecutive_losses"] >= 3:
         timeout = datetime.now() + timedelta(minutes=30)
         state["timeout_until"] = timeout.isoformat()
@@ -371,8 +387,8 @@ def place_and_monitor_limit_order(instrument_token, transaction_type, limit_pric
                         state["entry_time"] = datetime.now().isoformat()
                         send_telegram_alert(f"🟢 ENTRY: {state['position_type']} filled at ₹{avg_price} ({state['quantity']} qty)")
                     else:
-                        log_trade(db_connection, state["position_type"], state["buy_price"], avg_price, state["quantity"])
-                        if check_daily_drawdown(db_connection): state["bot_active"] = False
+                        log_trade(state["position_type"], state["buy_price"], avg_price, state["quantity"])
+                        if check_daily_drawdown(): state["bot_active"] = False
                         state["in_position"] = False
                     return
                 elif latest_status in ["cancelled", "rejected"]: return
@@ -578,7 +594,7 @@ def on_close(code, reason):
     threading.Thread(target=start_trading_bot, daemon=True).start()
 
 def start_trading_bot():
-    global api_client, db_connection, CE_TOKEN, PE_TOKEN, TOKENS, streamer
+    global api_client, CE_TOKEN, PE_TOKEN, TOKENS, streamer
     try:
         with open("upstox_token.txt", "r") as f: access_token = f.read().strip()
     except: return
@@ -590,10 +606,9 @@ def start_trading_bot():
     sync_broker_state()
     fetch_available_capital() # Grab live capital on boot
 
-    db_connection = setup_database()
-    load_todays_stats(db_connection)
+    load_todays_stats()
 
-    if check_daily_drawdown(db_connection):
+    if check_daily_drawdown():
         state["bot_active"] = False
         return
 

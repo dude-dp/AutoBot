@@ -3,3 +3,4 @@ __pycache__/
 *.db
 upstox_token.txt
 autobot.log
+.pytest_cache

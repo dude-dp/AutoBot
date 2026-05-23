@@ -12,7 +12,7 @@
             theme: {
                 extend: {
                     colors: {
-                        dark: '#0f172a',
+                        dark: '#301934',         /* Deep Purple/Black base */
                         card: '#1e293b',
                         accent: '#3b82f6',
                         success: '#10b981',
@@ -24,8 +24,9 @@
         }
     </script>
     <style>
-        body { background-color: #0f172a; color: #f8fafc; font-family: 'Inter', sans-serif; }
-        .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        /* Apply the new custom dark color to the main body */
+        body { background-color: #301934; color: #f8fafc; font-family: 'Inter', sans-serif; }
+        .glass { background: rgba(0, 0, 0, 0.4); backdrop-filter: blur(12px); border: 1px solid rgba(255, 255, 255, 0.05); }
         .scrollbar-hide::-webkit-scrollbar { display: none; }
         .scrollbar-hide { -ms-overflow-style: none; scrollbar-width: none; }
         
