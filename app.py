@@ -430,6 +430,35 @@ def on_message(message):
 
     if state["nifty_ltp"] == 0.0 or not state["bot_active"]: return
 
+    # ==========================================
+    # ⚠️ EOD AUTO-SQUARE OFF (3:15 PM)
+    # ==========================================
+    if now.hour == 15 and now.minute >= 15:
+        if state["bot_active"]:
+            add_activity("🕒 3:15 PM cutoff reached. Initiating EOD Shutdown.", "warn")
+            state["bot_active"] = False # Hard stop on all new entries
+            
+            # Flatten any open positions instantly
+            if state["in_position"]:
+                token_to_sell = CE_TOKEN if state["position_type"] == "CE" else PE_TOKEN
+                logging.critical(f"🚨 EOD SQUARE OFF: Flattening {state['position_type']} position.")
+                fire_market_order_async(token_to_sell, "SELL")
+                state["in_position"] = False
+                state["pending_order"] = False
+            
+            # Calculate Win Rate
+            win_rate = int((state["daily_wins"] / state["daily_trades"]) * 100) if state["daily_trades"] > 0 else 0
+            
+            # Fire Telegram Summary
+            send_telegram_alert(
+                f"📊 *EOD Summary - {date.today().isoformat()}*\n\n"
+                f"💰 Net PnL: ₹{state['daily_pnl']}\n"
+                f"📈 Total Trades: {state['daily_trades']}\n"
+                f"🎯 Win Rate: {win_rate}%\n"
+                f"🤖 System entering hibernation until tomorrow."
+            )
+        return # Block all further tick processing for the day
+
     # Tilt Breaker Check
     if state["timeout_until"]: return
 
@@ -579,7 +608,29 @@ def start_trading_bot():
     streamer.on("close", on_close)
     streamer.connect()
 
+# ==========================================
+# 6. SERVER STARTUP & LOGGING
+# ==========================================
+import logging.handlers
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    threading.Thread(target=start_trading_bot, daemon=True).start()
+    # Setup dual logging (Console + Rotating File)
+    log_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(log_formatter)
+    
+    # Keeps the latest 5MB of logs, backed up across 3 files max
+    file_handler = logging.handlers.RotatingFileHandler('autobot.log', maxBytes=5*1024*1024, backupCount=3)
+    file_handler.setFormatter(log_formatter)
+    
+    logging.basicConfig(level=logging.INFO, handlers=[console_handler, file_handler])
+
+    # Seed a startup log before the bot thread runs so UI has something to show
+    state["activity_log"].append({"time": datetime.now().strftime("%H:%M:%S"), "msg": "AutoBot Control Center starting...", "level": "info"})
+
+    bot_thread = threading.Thread(target=start_trading_bot, daemon=True)
+    bot_thread.start()
+
+    logging.info("Starting Control Center UI at http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
