@@ -40,7 +40,9 @@ state = {
     "atm_strike": 0,
     "bot_status_message": "Initializing...",
     "activity_log": [],  # ring buffer of last 50 events
-    "pending_order": False   # <--- ADD THIS LINE
+    "pending_order": False,
+    "last_traded_candle": -1,
+    "highest_unrealized_pnl": 0.0
 }
 
 import os
@@ -500,6 +502,10 @@ def on_message(message):
     if NIFTY_SPOT_TOKEN in feeds:
         try: state["nifty_ltp"] = feeds[NIFTY_SPOT_TOKEN]["ff"]["marketFF"]["ltpc"]["ltp"]
         except KeyError: pass
+        
+    # LOG THE TICK DATA TO CSV
+    from data_logger import log_tick
+    log_tick(state["nifty_ltp"], state["ce_ltp"], state["pe_ltp"])
     if CE_TOKEN in feeds:
         try: state["ce_ltp"] = feeds[CE_TOKEN]["ff"]["marketFF"]["ltpc"]["ltp"]
         except KeyError: pass
@@ -515,33 +521,107 @@ def on_message(message):
         state["candle_open_price"] = state["nifty_ltp"]
 
     if not state["bot_active"]: return
+    # Calculate Order Book Imbalance for CE and PE
+    ce_bids, ce_asks = 0, 0
+    pe_bids, pe_asks = 0, 0
     
-    # ⚠️ GUARD: Do not process signals if we are waiting for an order to fill/cancel
+    try:
+        # Extract Level 2 Depth for CE
+        ce_depth = feeds[CE_TOKEN]["ff"]["marketFF"]["marketLevel"]["bidAskQuote"]
+        ce_bids = sum([level["bq"] for level in ce_depth]) # Total Bid Quantity
+        ce_asks = sum([level["aq"] for level in ce_depth]) # Total Ask Quantity
+        
+        # Extract Level 2 Depth for PE
+        pe_depth = feeds[PE_TOKEN]["ff"]["marketFF"]["marketLevel"]["bidAskQuote"]
+        pe_bids = sum([level["bq"] for level in pe_depth])
+        pe_asks = sum([level["aq"] for level in pe_depth])
+    except KeyError:
+        pass # Fallback if depth data is missing on this specific tick
+
+    # ⚠️ GUARD 3: The "Chop Zone" Filter (12:00 PM to 1:30 PM)
+    # The market usually goes dead sideways during European lunch hours. Options decay (Theta) kills buyers here.
+    if 12 <= now.hour < 13 or (now.hour == 13 and now.minute <= 30):
+        return # Refuse to take new entries during the chop zone
+
+    # ⚠️ GUARD 1: Do not process signals if we are waiting for an order
     if state.get("pending_order", False): return
 
-    # Entry Logic
-    if not state["in_position"]:
-        if state["nifty_ltp"] < state["candle_open_price"] and state["ce_ltp"] <= MAX_PREMIUM:
-            logging.info(f"Entry Signal. Placing CE LIMIT Buy at ₹{state['ce_ltp']}")
-            fire_limit_order_async(CE_TOKEN, "BUY", state["ce_ltp"])
-            
-        elif state["nifty_ltp"] > state["candle_open_price"] and state["pe_ltp"] <= MAX_PREMIUM:
-            logging.info(f"Entry Signal. Placing PE LIMIT Buy at ₹{state['pe_ltp']}")
-            fire_limit_order_async(PE_TOKEN, "BUY", state["pe_ltp"])
+    # ⚠️ GUARD 2: The Whipsaw Lock (One trade per candle)
+    if not state["in_position"] and state["last_traded_candle"] == state["current_candle_minute"]:
+        return # Skip processing. We already traded this 5m candle.
 
-    # Exit Logic
+    # ==========================================
+    # ENTRY LOGIC
+    # ==========================================
+    if not state["in_position"]:
+        # Reset highest PnL tracker for the new trade
+        state["highest_unrealized_pnl"] = 0.0 
+        
+        # BUY CE (Index below Open)
+        if state["nifty_ltp"] < state["candle_open_price"] and state["ce_ltp"] <= MAX_PREMIUM:
+            if ce_asks > 0 and (ce_bids / ce_asks) >= 1.20:
+                logging.info(f"CE Imbalance Bullish ({ce_bids} vs {ce_asks}). Firing Entry!")
+                buy_price_with_offset = round(state["ce_ltp"] + 0.10, 1)
+                fire_limit_order_async(CE_TOKEN, "BUY", buy_price_with_offset)
+            else:
+                logging.info("CE Entry setup detected, but Order Book is weak/bearish. Ignoring fakeout.")
+            
+        # BUY PE (Index above Open)
+        elif state["nifty_ltp"] > state["candle_open_price"] and state["pe_ltp"] <= MAX_PREMIUM:
+            if pe_asks > 0 and (pe_bids / pe_asks) >= 1.20:
+                logging.info(f"PE Imbalance Bullish ({pe_bids} vs {pe_asks}). Firing Entry!")
+                buy_price_with_offset = round(state["pe_ltp"] + 0.10, 1)
+                fire_limit_order_async(PE_TOKEN, "BUY", buy_price_with_offset)
+            else:
+                logging.info("PE Entry setup detected, but Order Book is weak/bearish. Ignoring fakeout.")
+
+    # ==========================================
+    # EXIT LOGIC (With Trailing Stop Loss)
+    # ==========================================
     else:
-        if state["position_type"] == "CE":
-            pnl_pts = state["ce_ltp"] - state["buy_price"]
-            if state["nifty_ltp"] >= state["candle_open_price"] or pnl_pts >= TARGET_POINTS or pnl_pts <= -STOP_LOSS_POINTS:
-                logging.info(f"Exit Signal. Placing CE LIMIT Sell at ₹{state['ce_ltp']}")
-                fire_limit_order_async(CE_TOKEN, "SELL", state["ce_ltp"])
-                
-        elif state["position_type"] == "PE":
-            pnl_pts = state["pe_ltp"] - state["buy_price"]
-            if state["nifty_ltp"] <= state["candle_open_price"] or pnl_pts >= TARGET_POINTS or pnl_pts <= -STOP_LOSS_POINTS:
-                logging.info(f"Exit Signal. Placing PE LIMIT Sell at ₹{state['pe_ltp']}")
-                fire_limit_order_async(PE_TOKEN, "SELL", state["pe_ltp"])
+        current_premium = state["ce_ltp"] if state["position_type"] == "CE" else state["pe_ltp"]
+        pnl_pts = current_premium - state["buy_price"]
+        
+        # Track the peak profit of this specific trade
+        if pnl_pts > state["highest_unrealized_pnl"]:
+            state["highest_unrealized_pnl"] = pnl_pts
+
+        exit_signal = False
+        exit_reason = ""
+
+        # CONDITION 1: Market Structure Reversal (Strategy Invalidated)
+        if state["position_type"] == "CE" and state["nifty_ltp"] >= state["candle_open_price"]:
+            exit_signal = True; exit_reason = "Index crossed back above open"
+        elif state["position_type"] == "PE" and state["nifty_ltp"] <= state["candle_open_price"]:
+            exit_signal = True; exit_reason = "Index crossed back below open"
+
+        # CONDITION 2: Dynamic Trailing Stop Loss
+        else:
+            # Stage 3: We are deep in profit (> 2.5 pts). Trail SL by 1.0 pt.
+            if state["highest_unrealized_pnl"] >= 2.5:
+                trailing_sl = state["highest_unrealized_pnl"] - 1.0
+                if pnl_pts <= trailing_sl:
+                    exit_signal = True; exit_reason = f"Trailing Stop Hit at +{pnl_pts:.2f} pts"
+            
+            # Stage 2: We hit our 1.5 target. Move SL to +0.5 (Risk-Free Trade)
+            elif state["highest_unrealized_pnl"] >= TARGET_POINTS:
+                if pnl_pts <= 0.5:
+                    exit_signal = True; exit_reason = "Risk-Free Stop Hit at +0.5 pts"
+            
+            # Stage 1: Standard Initial Stop Loss (-2.0 pts)
+            else:
+                if pnl_pts <= -STOP_LOSS_POINTS:
+                    exit_signal = True; exit_reason = "Hard Stop Loss Hit"
+
+        # Trigger the Exit
+        if exit_signal:
+            logging.info(f"Exit Signal ({exit_reason}). Placing {state['position_type']} LIMIT Sell at ₹{current_premium}")
+            
+            # Lock out the bot for the rest of this 5-minute candle
+            state["last_traded_candle"] = state["current_candle_minute"]
+            
+            token_to_sell = CE_TOKEN if state["position_type"] == "CE" else PE_TOKEN
+            fire_limit_order_async(token_to_sell, "SELL", current_premium)
 
 def sync_broker_state():
     """Queries Upstox on startup to recover any open positions."""
