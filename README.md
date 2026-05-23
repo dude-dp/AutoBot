@@ -76,7 +76,7 @@ source env/bin/activate
 ```bash
 pip install fastapi uvicorn upstox-python-sdk pandas python-dotenv requests
 ```
-
+n
 ### 2. Daily Operations
 **1. Run Authentication (Required Daily):**
 ```bash
