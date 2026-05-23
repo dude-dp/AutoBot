@@ -623,6 +623,40 @@ def start_trading_bot():
     streamer.on("close", on_close)
     streamer.connect()
 
+def poll_supabase_commands():
+    """Background thread that checks Supabase for remote mobile commands."""
+    logging.info("☁️ Cloud Command Polling Activated.")
+    while True:
+        try:
+            response = supabase.table('bot_control').select('command').eq('id', 1).execute()
+            if response.data and len(response.data) > 0:
+                current_command = response.data[0]['command']
+                
+                if current_command == 'PANIC':
+                    logging.critical("🚨 CLOUD PANIC SIGNAL RECEIVED!")
+                    
+                    # 1. Reset the cloud state immediately so we don't loop
+                    supabase.table('bot_control').update({
+                        'command': 'NONE', 
+                        'updated_at': datetime.now().isoformat()
+                    }).eq('id', 1).execute()
+                    
+                    # 2. Execute the Panic Sequence locally
+                    state["bot_active"] = False
+                    if state["in_position"]:
+                        token_to_sell = CE_TOKEN if state["position_type"] == "CE" else PE_TOKEN
+                        logging.critical(f"🚨 CLOUD PANIC SELL: Flattening {state['position_type']}.")
+                        fire_market_order_async(token_to_sell, "SELL")
+                        state["in_position"] = False
+                        state["pending_order"] = False
+                        
+                    send_telegram_alert("⚠️ CLOUD PANIC SELL INITIATED VIA MOBILE EDGE!")
+                    
+        except Exception as e:
+            pass # Fail silently on network blips and try again next loop
+            
+        time.sleep(2) # Poll every 2 seconds
+
 # ==========================================
 # 6. SERVER STARTUP & LOGGING
 # ==========================================
@@ -646,6 +680,9 @@ if __name__ == "__main__":
 
     bot_thread = threading.Thread(target=start_trading_bot, daemon=True)
     bot_thread.start()
+
+    # Start the cloud polling thread
+    threading.Thread(target=poll_supabase_commands, daemon=True).start()
 
     logging.info("Starting Control Center UI at http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)
