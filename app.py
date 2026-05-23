@@ -40,10 +40,12 @@ state = {
     "atm_strike": 0,
     "bot_status_message": "Initializing...",
     "activity_log": [],  # ring buffer of last 50 events
+    "pending_order": False   # <--- ADD THIS LINE
 }
 
 import os
 from dotenv import load_dotenv
+import requests
 
 load_dotenv()
 
@@ -52,6 +54,23 @@ MAX_PREMIUM = 100
 TARGET_POINTS = 1.5
 STOP_LOSS_POINTS = 2.0
 MAX_DAILY_LOSS = float(os.getenv("MAX_DAILY_LOSS", -1500))
+
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+def send_telegram_alert(message):
+    """Fires a push notification to your phone."""
+    if not TELEGRAM_TOKEN or not CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": f"🤖 Options Scalper Alert:\n\n{message}"
+    }
+    try:
+        requests.post(url, json=payload, timeout=5)
+    except Exception as e:
+        logging.error(f"Failed to send Telegram alert: {e}")
 
 NIFTY_SPOT_TOKEN = "NSE_INDEX|Nifty 50"
 CE_TOKEN = ""
@@ -136,14 +155,13 @@ async def update_config(data: ConfigUpdate):
 @app.post("/api/panic")
 async def panic_sell():
     state["bot_active"] = False
-    state["bot_status_message"] = "🚨 PANIC SELL EXECUTED — BOT HALTED"
     if state["in_position"]:
         token_to_sell = CE_TOKEN if state["position_type"] == "CE" else PE_TOKEN
-        add_activity(f"🚨 PANIC SELL: {state['position_type']} position flattened!", "error")
-        fire_order_async(token_to_sell, "SELL")
+        logging.critical(f"🚨 PANIC SELL INITIATED FOR {state['position_type']} 🚨")
+        fire_market_order_async(token_to_sell, "SELL")
         state["in_position"] = False
-    else:
-        add_activity("🚨 PANIC triggered — no open position to close.", "warn")
+        state["pending_order"] = False # Release any limit order locks
+    send_telegram_alert("⚠️ PANIC SELL INITIATED VIA UI!")
     return {"status": "panic_executed"}
 
 @app.get("/api/history/daily")
@@ -236,6 +254,7 @@ def check_daily_drawdown(conn):
     daily_pnl = result if result else 0.0
     state["daily_pnl"] = round(daily_pnl, 2)
     if daily_pnl <= MAX_DAILY_LOSS:
+        send_telegram_alert("🚨 MAX DAILY DRAWDOWN HIT. BOT HALTED.")
         return True
     return False
 
@@ -334,29 +353,150 @@ def get_dynamic_tokens():
 # ==========================================
 # 5. ORDER EXECUTION & WEBSOCKET
 # ==========================================
-def place_order(instrument_token, transaction_type):
+import time
+
+def fire_market_order_async(instrument_token, transaction_type):
+    """Used strictly for the Panic Sell Button to flatten instantly."""
+    def execute():
+        order_api = upstox_client.OrderApi(api_client)
+        body = upstox_client.PlaceOrderRequest(
+            quantity=state["quantity"], product="I", validity="DAY", price=0.0,
+            instrument_token=instrument_token, order_type="MARKET",
+            transaction_type=transaction_type, disclosed_quantity=0,
+            trigger_price=0.0, is_amo=False
+        )
+        try:
+            order_api.place_order(body, api_version='2.0')
+        except Exception as e:
+            logging.error(f"Panic Order Failed: {e}")
+            
+    threading.Thread(target=execute).start()
+
+
+def place_and_monitor_limit_order(instrument_token, transaction_type, limit_price):
+    """Places a limit order with advanced consolidation and momentum safeguards."""
     order_api = upstox_client.OrderApi(api_client)
     body = upstox_client.PlaceOrderRequest(
         quantity=state["quantity"],
-        product="I", validity="DAY", price=0.0,
-        instrument_token=instrument_token, order_type="MARKET",
+        product="I", validity="DAY", price=float(limit_price),
+        instrument_token=instrument_token, order_type="LIMIT",
         transaction_type=transaction_type, disclosed_quantity=0,
         trigger_price=0.0, is_amo=False
     )
+    
     try:
         response = order_api.place_order(body, api_version='2.0')
-        add_activity(f"Order OK [{transaction_type}] ID: {response.data.order_id}", "info")
-    except ApiException as e:
-        add_activity(f"❌ Order FAILED: {e.body}", "error")
+        order_id = response.data.order_id
+        logging.info(f"✅ [{transaction_type}] LIMIT Placed at ₹{limit_price}. ID: {order_id}")
+        
+        start_time = time.time()
+        start_candle = state["current_candle_minute"]
+        
+        while state["bot_active"]:
+            try:
+                hist = order_api.get_order_details(api_version='2.0', order_id=order_id)
+                order_info = hist.data[0]
+                latest_status = order_info.status
+                
+                # --- CASE A: ORDER FILLED ---
+                if latest_status == "complete":
+                    avg_price = order_info.average_price or limit_price
+                    logging.info(f"✅ Order {order_id} FILLED at ₹{avg_price}")
+                    
+                    if transaction_type == "BUY":
+                        state["in_position"] = True
+                        state["position_type"] = "CE" if instrument_token == CE_TOKEN else "PE"
+                        state["buy_price"] = avg_price
+                    else:
+                        log_trade(db_connection, state["position_type"], state["buy_price"], avg_price, state["quantity"])
+                        if check_daily_drawdown(db_connection): state["bot_active"] = False
+                        state["in_position"] = False
+                        
+                    return
+                    
+                # --- CASE B: EXTERNALLY CANCELLED ---
+                elif latest_status in ["cancelled", "rejected"]:
+                    logging.warning(f"⚠️ Order {order_id} was {latest_status}.")
+                    return
+                    
+            except ApiException:
+                pass # Ignore API hiccups during polling
+            
+            # ==========================================
+            # CONSOLIDATION & SAFEGUARD LOGIC
+            # ==========================================
+            current_ltp = state["ce_ltp"] if instrument_token == CE_TOKEN else state["pe_ltp"]
+            elapsed_time = time.time() - start_time
+            cancel_reason = None
+            
+            # RULE 1: The 1-Point Drift (Applies to Buy & Sell)
+            if abs(current_ltp - limit_price) >= 1.0:
+                cancel_reason = "Price drifted 1pt away"
 
-def fire_order_async(instrument_token, transaction_type):
-    thread = threading.Thread(target=place_order, args=(instrument_token, transaction_type))
+            if transaction_type == "BUY":
+                # RULE 2: Momentum Death (Consolidating too long on Entry)
+                if elapsed_time > 60: 
+                    cancel_reason = "Momentum died (>60s in consolidation)"
+                
+                # RULE 3: Setup Invalidation (New candle opened before fill)
+                elif state["current_candle_minute"] != start_candle:
+                    cancel_reason = "5m Candle closed. Setup invalidated"
+
+            elif transaction_type == "SELL":
+                # RULE 4: THE STOP-LOSS OVERRIDE (Critical for Exits)
+                # If we are resting a limit to take profit, but the price tanks to our Stop Loss
+                pnl_pts = current_ltp - state["buy_price"]
+                
+                # Check Stop Loss (-2.0 pts) OR Index reversal
+                if pnl_pts <= -STOP_LOSS_POINTS or (
+                    (state["position_type"] == "CE" and state["nifty_ltp"] <= state["candle_open_price"]) or 
+                    (state["position_type"] == "PE" and state["nifty_ltp"] >= state["candle_open_price"])
+                ):
+                    logging.critical(f"🚨 STOP LOSS BREACHED DURING CONSOLIDATION! Cancelling Limit & Firing Market Order.")
+                    send_telegram_alert(f"🛑 STOP LOSS HIT ON {state['position_type']}! Position closed.")
+                    try:
+                        order_api.cancel_order(order_id=order_id, api_version='2.0')
+                    except Exception: pass
+                    
+                    # Fire emergency market exit
+                    fire_market_order_async(instrument_token, "SELL")
+                    return # Exit the thread immediately
+
+            # Execute Cancellation if a reason was triggered
+            if cancel_reason:
+                logging.info(f"⏱️ Cancelling Limit Order {order_id}. Reason: {cancel_reason}")
+                try:
+                    order_api.cancel_order(order_id=order_id, api_version='2.0')
+                except ApiException as e:
+                    logging.error(f"Cancel failed: {e.body}")
+                # We do NOT set pending_order = False here. We let the next loop iteration 
+                # catch the "cancelled" status to ensure the API actually killed it cleanly.
+
+            time.sleep(1) # Poll every 1 second
+            
+        # If UI Panic Button is pressed, kill pending orders
+        if state.get("pending_order"):
+            try: order_api.cancel_order(order_id=order_id, api_version='2.0')
+            except Exception: pass
+            
+    except Exception as e:
+        logging.critical(f"FATAL ERROR inside order thread: {e}")
+        
+    finally:
+        state["pending_order"] = False
+        logging.info("Order lock safely released.")
+
+
+def fire_limit_order_async(instrument_token, transaction_type, limit_price):
+    state["pending_order"] = True
+    thread = threading.Thread(target=place_and_monitor_limit_order, args=(instrument_token, transaction_type, limit_price))
     thread.start()
+
 
 def on_message(message):
     now = datetime.now()
     feeds = message.get("feeds", {})
-
+    
     if NIFTY_SPOT_TOKEN in feeds:
         try: state["nifty_ltp"] = feeds[NIFTY_SPOT_TOKEN]["ff"]["marketFF"]["ltpc"]["ltp"]
         except KeyError: pass
@@ -367,68 +507,77 @@ def on_message(message):
         try: state["pe_ltp"] = feeds[PE_TOKEN]["ff"]["marketFF"]["ltpc"]["ltp"]
         except KeyError: pass
 
-    if state["nifty_ltp"] == 0.0:
-        return
+    if state["nifty_ltp"] == 0.0: return
 
     current_5min_block = now.minute // 5
     if current_5min_block != state["current_candle_minute"]:
         state["current_candle_minute"] = current_5min_block
         state["candle_open_price"] = state["nifty_ltp"]
 
-    if not state["bot_active"]:
-        return
+    if not state["bot_active"]: return
+    
+    # ⚠️ GUARD: Do not process signals if we are waiting for an order to fill/cancel
+    if state.get("pending_order", False): return
 
     # Entry Logic
     if not state["in_position"]:
         if state["nifty_ltp"] < state["candle_open_price"] and state["ce_ltp"] <= MAX_PREMIUM:
-            fire_order_async(CE_TOKEN, "BUY")
-            state["in_position"] = True
-            state["position_type"] = "CE"
-            state["buy_price"] = state["ce_ltp"]
-            state["entry_time"] = now.strftime("%H:%M:%S")
-            state["bot_status_message"] = f"In CE position @ ₹{state['ce_ltp']:.1f}"
-            add_activity(f"📈 BUY CE @ ₹{state['ce_ltp']:.1f} | Nifty fell below {state['candle_open_price']:.1f}", "info")
-
+            logging.info(f"Entry Signal. Placing CE LIMIT Buy at ₹{state['ce_ltp']}")
+            fire_limit_order_async(CE_TOKEN, "BUY", state["ce_ltp"])
+            
         elif state["nifty_ltp"] > state["candle_open_price"] and state["pe_ltp"] <= MAX_PREMIUM:
-            fire_order_async(PE_TOKEN, "BUY")
-            state["in_position"] = True
-            state["position_type"] = "PE"
-            state["buy_price"] = state["pe_ltp"]
-            state["entry_time"] = now.strftime("%H:%M:%S")
-            state["bot_status_message"] = f"In PE position @ ₹{state['pe_ltp']:.1f}"
-            add_activity(f"📉 BUY PE @ ₹{state['pe_ltp']:.1f} | Nifty rose above {state['candle_open_price']:.1f}", "info")
+            logging.info(f"Entry Signal. Placing PE LIMIT Buy at ₹{state['pe_ltp']}")
+            fire_limit_order_async(PE_TOKEN, "BUY", state["pe_ltp"])
 
     # Exit Logic
     else:
         if state["position_type"] == "CE":
             pnl_pts = state["ce_ltp"] - state["buy_price"]
             if state["nifty_ltp"] >= state["candle_open_price"] or pnl_pts >= TARGET_POINTS or pnl_pts <= -STOP_LOSS_POINTS:
-                reason = "TARGET" if pnl_pts >= TARGET_POINTS else ("STOP-LOSS" if pnl_pts <= -STOP_LOSS_POINTS else "REVERSAL")
-                fire_order_async(CE_TOKEN, "SELL")
-                log_trade(db_connection, "CE", state["buy_price"], state["ce_ltp"], state["quantity"])
-                if check_daily_drawdown(db_connection):
-                    state["bot_active"] = False
-                    state["bot_status_message"] = "🚫 Daily loss limit hit — halted"
-                    add_activity("🚫 Max daily loss reached. Bot halted.", "error")
-                else:
-                    state["bot_status_message"] = f"Waiting for next setup ({reason})"
-                state["in_position"] = False
-                state["entry_time"] = None
-
+                logging.info(f"Exit Signal. Placing CE LIMIT Sell at ₹{state['ce_ltp']}")
+                fire_limit_order_async(CE_TOKEN, "SELL", state["ce_ltp"])
+                
         elif state["position_type"] == "PE":
             pnl_pts = state["pe_ltp"] - state["buy_price"]
             if state["nifty_ltp"] <= state["candle_open_price"] or pnl_pts >= TARGET_POINTS or pnl_pts <= -STOP_LOSS_POINTS:
-                reason = "TARGET" if pnl_pts >= TARGET_POINTS else ("STOP-LOSS" if pnl_pts <= -STOP_LOSS_POINTS else "REVERSAL")
-                fire_order_async(PE_TOKEN, "SELL")
-                log_trade(db_connection, "PE", state["buy_price"], state["pe_ltp"], state["quantity"])
-                if check_daily_drawdown(db_connection):
-                    state["bot_active"] = False
-                    state["bot_status_message"] = "🚫 Daily loss limit hit — halted"
-                    add_activity("🚫 Max daily loss reached. Bot halted.", "error")
+                logging.info(f"Exit Signal. Placing PE LIMIT Sell at ₹{state['pe_ltp']}")
+                fire_limit_order_async(PE_TOKEN, "SELL", state["pe_ltp"])
+
+def sync_broker_state():
+    """Queries Upstox on startup to recover any open positions."""
+    logging.info("Synchronizing state with broker...")
+    portfolio_api = upstox_client.PortfolioApi(api_client)
+    
+    try:
+        response = portfolio_api.get_positions(api_version='2.0')
+        positions = response.data
+        
+        for pos in positions:
+            # Look for an open intraday (day) position with a quantity > 0
+            if pos.quantity != 0 and pos.product == "I":
+                logging.warning(f"⚠️ RECOVERED OPEN POSITION: {pos.quantity}x {pos.trading_symbol}")
+                
+                state["in_position"] = True
+                state["buy_price"] = pos.average_price
+                
+                # Figure out if it's CE or PE based on the symbol
+                if "CE" in pos.trading_symbol:
+                    state["position_type"] = "CE"
+                    # Hard-update the token if we lost it in a crash
+                    global CE_TOKEN
+                    CE_TOKEN = pos.instrument_token 
                 else:
-                    state["bot_status_message"] = f"Waiting for next setup ({reason})"
-                state["in_position"] = False
-                state["entry_time"] = None
+                    state["position_type"] = "PE"
+                    global PE_TOKEN
+                    PE_TOKEN = pos.instrument_token
+                    
+                logging.info(f"State successfully synced. Resuming Stop-Loss monitoring.")
+                return # Only handle one position at a time
+                
+        logging.info("No open positions found. State is clean.")
+        
+    except ApiException as e:
+        logging.error(f"Failed to sync broker state: {e.body}")
 
 def on_open():
     add_activity("✅ WebSocket connected. Subscribing to market feed...", "info")
@@ -449,6 +598,8 @@ def start_trading_bot():
     configuration = upstox_client.Configuration()
     configuration.access_token = access_token
     api_client = upstox_client.ApiClient(configuration)
+
+    sync_broker_state()
 
     db_connection = setup_database()
     load_todays_stats(db_connection)
