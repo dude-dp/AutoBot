@@ -6,7 +6,14 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
     <html lang="en">
       <head>
         <meta charset="UTF-8" />
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+        
+        {/* PWA Manifest and Theme Colors */}
+        <link rel="manifest" href="/manifest.json" />
+        <meta name="theme-color" content="#1a1020" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+        
         <title>{title}</title>
         <script src="https://cdn.tailwindcss.com"></script>
         <script src="https://unpkg.com/htmx.org@1.9.10"></script>
@@ -29,9 +36,11 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
         <style dangerouslySetInnerHTML={{
           __html: `
           @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+          
+          *, *::before, *::after { box-sizing: border-box; }
           body { background-color: #1a1020; color: #f8fafc; overflow: hidden; }
           
-          /* Ambient Liquid Backgrounds */
+          /* ===== Ambient Liquid Orbs ===== */
           .glow-orb-1 {
               position: fixed; top: -10%; right: -5%; width: 70vw; height: 70vh;
               background: radial-gradient(circle, rgba(245,158,11,0.15) 0%, rgba(217,119,6,0) 70%);
@@ -56,9 +65,9 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
           }
           .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
-          /* Premium Glass Cards */
+          /* ===== Premium Glass Cards ===== */
           .glass-panel {
-              background: rgba(26, 16, 32, 0.6);
+              background: rgba(26, 16, 32, 0.85);
               backdrop-filter: blur(28px);
               -webkit-backdrop-filter: blur(28px);
               border-right: 1px solid rgba(255, 255, 255, 0.05);
@@ -71,7 +80,7 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
               box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1);
           }
 
-          /* Flash animations for Real-Time execution */
+          /* ===== Flash Animations (Real-Time Execution) ===== */
           @keyframes flashProfit {
               0% { background-color: rgba(16, 185, 129, 0.8); box-shadow: 0 0 30px rgba(16, 185, 129, 0.8); transform: scale(1.02); }
               100% { background-color: transparent; box-shadow: none; transform: scale(1); }
@@ -80,21 +89,72 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
               0% { background-color: rgba(239, 68, 68, 0.8); box-shadow: 0 0 30px rgba(239, 68, 68, 0.8); transform: scale(1.02); }
               100% { background-color: transparent; box-shadow: none; transform: scale(1); }
           }
-
           .flash-profit { animation: flashProfit 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
           .flash-loss { animation: flashLoss 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
 
-          /* Typography Glows */
+          /* ===== Typography Glows ===== */
           .glow-green { text-shadow: 0 0 20px rgba(16, 185, 129, 0.4); }
           .glow-red { text-shadow: 0 0 20px rgba(239, 68, 68, 0.4); }
 
-          #sidebar { transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
-          .sidebar-text { transition: opacity 0.2s, width 0.2s; white-space: nowrap; }
-          .sidebar-collapsed { width: 5rem; }
-          .sidebar-collapsed .sidebar-text { opacity: 0; width: 0; overflow: hidden; }
+          /* ===== Scrollbar ===== */
           .custom-scroll::-webkit-scrollbar { width: 6px; }
           .custom-scroll::-webkit-scrollbar-track { background: transparent; }
           .custom-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+
+          /* ===== Sidebar: Desktop Behavior ===== */
+          .sidebar-desktop {
+              width: 16rem; /* w-64 */
+              height: 100%;
+              transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+          }
+          .sidebar-text { transition: opacity 0.2s, width 0.2s; white-space: nowrap; }
+          
+          /* Desktop collapse */
+          .sidebar-collapsed { width: 5rem; }
+          .sidebar-collapsed .sidebar-text { opacity: 0; width: 0; overflow: hidden; }
+
+          /* ===== Sidebar: Mobile Drawer ===== */
+          .sidebar-overlay {
+              display: none;
+              position: fixed; inset: 0;
+              background: rgba(0, 0, 0, 0.6);
+              backdrop-filter: blur(4px);
+              z-index: 30;
+              opacity: 0;
+              transition: opacity 0.3s ease;
+          }
+          .sidebar-overlay.active {
+              display: block;
+              opacity: 1;
+          }
+
+          @media (max-width: 767px) {
+              .sidebar-desktop {
+                  position: fixed;
+                  left: 0; top: 0; bottom: 0;
+                  width: 18rem;
+                  z-index: 40;
+                  transform: translateX(-100%);
+                  transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+              }
+              .sidebar-desktop.mobile-open {
+                  transform: translateX(0);
+              }
+              /* Never apply desktop collapse on mobile */
+              .sidebar-collapsed { width: 18rem; }
+              .sidebar-collapsed .sidebar-text { opacity: 1; width: auto; overflow: visible; }
+          }
+
+          /* ===== Mobile-Friendly Table Scroll ===== */
+          .table-scroll-container {
+              overflow-x: auto;
+              -webkit-overflow-scrolling: touch;
+          }
+
+          /* ===== Touch-Friendly Tap Targets ===== */
+          @media (max-width: 767px) {
+              input, button, a { min-height: 44px; }
+          }
           `
         }} />
       </head>
@@ -110,11 +170,29 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
 
         <script dangerouslySetInnerHTML={{
           __html: `
+          // === Desktop sidebar collapse ===
           function toggleSidebar() {
               const sidebar = document.getElementById('sidebar');
               sidebar.classList.toggle('sidebar-collapsed');
           }
 
+          // === Mobile sidebar drawer ===
+          function openMobileSidebar() {
+              const sidebar = document.getElementById('sidebar');
+              const overlay = document.getElementById('sidebar-overlay');
+              sidebar.classList.add('mobile-open');
+              overlay.classList.add('active');
+              document.body.style.overflow = 'hidden';
+          }
+          function closeMobileSidebar() {
+              const sidebar = document.getElementById('sidebar');
+              const overlay = document.getElementById('sidebar-overlay');
+              sidebar.classList.remove('mobile-open');
+              overlay.classList.remove('active');
+              document.body.style.overflow = '';
+          }
+
+          // === Kill Switch ===
           async function killSwitch() {
               if (confirm("🚨 WARNING: Market-sell open positions and halt the local engine. Proceed?")) {
                   try {
@@ -126,6 +204,7 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
               }
           }
 
+          // === Active sidebar link highlighting ===
           function updateActiveSidebarLink() {
               const path = window.location.pathname;
               const links = document.querySelectorAll('#sidebar nav a');
@@ -140,8 +219,23 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
           }
 
           document.body.addEventListener('htmx:afterSwap', updateActiveSidebarLink);
-          // Run immediately
           updateActiveSidebarLink();
+
+          // Close sidebar on escape key
+          document.addEventListener('keydown', function(e) {
+              if (e.key === 'Escape') closeMobileSidebar();
+          });
+
+          // Register PWA Service Worker
+          if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+              navigator.serviceWorker.register('/sw.js').then((registration) => {
+                console.log('ServiceWorker registered with scope:', registration.scope);
+              }).catch((error) => {
+                console.error('ServiceWorker registration failed:', error);
+              });
+            });
+          }
           `
         }} />
       </body>

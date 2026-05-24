@@ -56,7 +56,6 @@ app.get('/statistics', async (c) => {
   const isHX = c.req.header('HX-Request') === 'true'
   const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
   
-  // Fetch ALL trades for global analytics
   const { data: trades, error } = await supabase
     .from('trade_log')
     .select('*')
@@ -74,42 +73,73 @@ app.get('/statistics', async (c) => {
     return c.html(isHX ? errorContent : <Layout title="Error" currentPath="/statistics">{errorContent}</Layout>)
   }
 
-  // --- Edge-Computed Analytics ---
+  // --- 1. Global Analytics ---
   const totalTrades = trades.length
   const totalPnL = trades.reduce((sum, t) => sum + (t.pnl || 0), 0)
   const totalWins = trades.filter(t => t.pnl > 0).length
   const winRate = totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0
 
-  // Asset Specific Win Rates
   const ceTrades = trades.filter(t => t.position_type === 'CE')
   const peTrades = trades.filter(t => t.position_type === 'PE')
-  
-  const ceWins = ceTrades.filter(t => t.pnl > 0).length
-  const peWins = peTrades.filter(t => t.pnl > 0).length
+  const ceWinRate = ceTrades.length > 0 ? Math.round((ceTrades.filter(t => t.pnl > 0).length / ceTrades.length) * 100) : 0
+  const peWinRate = peTrades.length > 0 ? Math.round((peTrades.filter(t => t.pnl > 0).length / peTrades.length) * 100) : 0
 
-  const ceWinRate = ceTrades.length > 0 ? Math.round((ceWins / ceTrades.length) * 100) : 0
-  const peWinRate = peTrades.length > 0 ? Math.round((peWins / peTrades.length) * 100) : 0
-
-  // Daily PnL Aggregation for the Bar Chart
+  // --- 2. Daily Bar Chart Aggregation ---
   const dailyAggregation: Record<string, number> = {}
   trades.forEach(t => {
     if (!dailyAggregation[t.trade_date]) dailyAggregation[t.trade_date] = 0
     dailyAggregation[t.trade_date] += t.pnl
   })
-
-  // Extract the last 14 days for the chart to keep it clean
   const chartLabels = Object.keys(dailyAggregation).slice(-14)
   const chartData = Object.values(dailyAggregation).slice(-14)
 
+  // --- 3. TIME-OF-DAY HEATMAP AGGREGATION ---
+  const timeBuckets: Record<string, { grossProfit: number, grossLoss: number, netPnl: number, wins: number, total: number }> = {}
+  
+  // Initialize standard Indian market hours (09:15 to 15:15) in 15-min buckets
+  for(let h=9; h<=15; h++) {
+      for(let m=0; m<60; m+=15) {
+          if (h===9 && m<15) continue;
+          if (h===15 && m>15) continue;
+          const bin = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
+          timeBuckets[bin] = { grossProfit: 0, grossLoss: 0, netPnl: 0, wins: 0, total: 0 };
+      }
+  }
+
+  trades.forEach(t => {
+      // Parse HH:MM from "09:17:22"
+      const [hh, mm] = t.time.split(':').map(Number);
+      const mBin = Math.floor(mm / 15) * 15;
+      const binStr = `${hh.toString().padStart(2, '0')}:${mBin.toString().padStart(2, '0')}`;
+      
+      if(timeBuckets[binStr]) {
+          const b = timeBuckets[binStr];
+          b.total++;
+          b.netPnl += t.pnl;
+          if(t.pnl > 0) { b.grossProfit += t.pnl; b.wins++; }
+          else { b.grossLoss += Math.abs(t.pnl); }
+      }
+  });
+
+  const heatmapLabels = Object.keys(timeBuckets);
+  const heatmapStats = heatmapLabels.map(bin => {
+      const b = timeBuckets[bin];
+      // Calculate Profit Factor (PF). If no losses, cap at gross profit.
+      const pf = b.grossLoss === 0 ? (b.grossProfit > 0 ? b.grossProfit : 0) : (b.grossProfit / b.grossLoss);
+      return { 
+          pnl: b.netPnl, 
+          pf: Number(pf.toFixed(2)), 
+          wr: b.total > 0 ? Math.round((b.wins/b.total)*100) : 0,
+          total: b.total
+      };
+  });
+
   const content = (
     <Statistics 
-      totalTrades={totalTrades} 
-      winRate={winRate} 
-      totalPnL={totalPnL}
-      ceWinRate={ceWinRate}
-      peWinRate={peWinRate}
-      chartLabels={chartLabels}
-      chartData={chartData}
+      totalTrades={totalTrades} winRate={winRate} totalPnL={totalPnL}
+      ceWinRate={ceWinRate} peWinRate={peWinRate}
+      chartLabels={chartLabels} chartData={chartData}
+      heatmapLabels={heatmapLabels} heatmapStats={heatmapStats}
     />
   )
 
@@ -153,6 +183,48 @@ app.get('/simulations', async (c) => {
 })
 
 // API Endpoints
+// ==========================================
+// 🛡️ RISK MANAGEMENT API
+// ==========================================
+app.get('/api/risk-config', async (c) => {
+  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
+  const { data } = await supabase.from('bot_control').select('*').eq('id', 1).single()
+  
+  return c.json({
+    maxDrawdown: data?.max_drawdown ?? -1500,
+    maxConsecutiveLosses: data?.max_consecutive_losses ?? 3,
+    status: data?.status || 'ACTIVE'
+  })
+})
+
+app.post('/api/risk-config', async (c) => {
+  const body = await c.req.json()
+  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
+  
+  const { error } = await supabase.from('bot_control').update({ 
+    max_drawdown: body.maxDrawdown,
+    max_consecutive_losses: body.maxConsecutiveLosses,
+    status: 'ACTIVE', // Reset status when applying new rules
+    updated_at: new Date().toISOString()
+  }).eq('id', 1)
+  
+  if (error) return c.json({ status: 'error', message: error.message }, 500)
+  return c.json({ status: 'success' })
+})
+
+app.post('/api/halt', async (c) => {
+  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
+  // Flip the PANIC command for the Python script, and set the UI status to HALTED
+  const { error } = await supabase.from('bot_control').update({ 
+    command: 'PANIC', 
+    status: 'HALTED',
+    updated_at: new Date().toISOString() 
+  }).eq('id', 1)
+  
+  if (error) return c.json({ status: 'error', message: error.message }, 500)
+  return c.json({ status: 'success' })
+})
+
 app.post('/api/panic', async (c) => {
   const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
   const { error } = await supabase.from('bot_control').update({ command: 'PANIC', updated_at: new Date().toISOString() }).eq('id', 1)

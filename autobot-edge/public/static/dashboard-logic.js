@@ -10,7 +10,11 @@ let state = {
     dailyPnL: 0,
     totalTrades: 0,
     wins: 0,
-    cumulativePnL: 0
+    cumulativePnL: 0,
+    maxDrawdown: -1500,
+    maxConsecutiveLosses: 3,
+    consecutiveLosses: 0,
+    systemStatus: 'ACTIVE'
 };
 
 // Gradient Helper for Chart.js
@@ -39,6 +43,34 @@ async function fetchInitialData() {
         
         if (data.chartData.length > 0) {
             state.cumulativePnL = parseFloat(data.chartData[data.chartData.length - 1]);
+        }
+
+        // Calculate initial consecutive losses from today's trades
+        state.consecutiveLosses = 0;
+        if (data.tableTrades && data.tableTrades.length > 0) {
+            for (let t of data.tableTrades) {
+                if (t.pnl < 0) {
+                    state.consecutiveLosses++;
+                } else {
+                    break; // Reset on the first win we find going backwards
+                }
+            }
+        }
+
+        // Fetch Risk Config from Edge API
+        try {
+            const riskRes = await fetch('/api/risk-config');
+            const riskData = await riskRes.json();
+            state.maxDrawdown = riskData.maxDrawdown;
+            state.maxConsecutiveLosses = riskData.maxConsecutiveLosses;
+            updateSystemStatusUI(riskData.status);
+
+            const inputMaxDd = document.getElementById('input-max-dd');
+            const inputMaxLoss = document.getElementById('input-max-loss');
+            if (inputMaxDd) inputMaxDd.value = state.maxDrawdown;
+            if (inputMaxLoss) inputMaxLoss.value = state.maxConsecutiveLosses;
+        } catch (riskErr) {
+            console.error("Failed to load risk config:", riskErr);
         }
 
         updateTopMetrics();
@@ -75,7 +107,12 @@ function handleLiveExecution(trade) {
     // Update State Calculations
     state.dailyPnL += trade.pnl;
     state.totalTrades += 1;
-    if (isProfit) state.wins += 1;
+    if (isProfit) {
+        state.wins += 1;
+        state.consecutiveLosses = 0;
+    } else {
+        state.consecutiveLosses += 1;
+    }
     state.cumulativePnL += trade.pnl;
 
     updateTopMetrics();
@@ -140,6 +177,15 @@ function handleLiveExecution(trade) {
             tradesContainer.innerHTML = '';
         }
         tradesContainer.insertBefore(newCard, tradesContainer.firstChild);
+    }
+
+    // ⚡ THE AUTONOMOUS CIRCUIT BREAKER ⚡
+    if (state.systemStatus === 'ACTIVE') {
+        if (state.dailyPnL <= state.maxDrawdown) {
+            triggerHalt(`Max Drawdown breached (₹${state.dailyPnL})`);
+        } else if (state.consecutiveLosses >= state.maxConsecutiveLosses) {
+            triggerHalt(`${state.consecutiveLosses} consecutive losses hit`);
+        }
     }
 }
 
@@ -311,7 +357,6 @@ window.killSwitch = async function() {
         alert("Panic signal sent.");
     }
 };
-
 window.analyzeDay = async function() {
     const box = document.getElementById('ai-summary-box');
     if (!box) return;
@@ -324,4 +369,59 @@ window.analyzeDay = async function() {
     } catch (e) {
         box.innerHTML = 'Analysis unavailable.';
     }
+};
+
+// Global Functions for Halt and UI
+async function triggerHalt(reason) {
+    console.warn(`🛑 CIRCUIT BREAKER TRIPPED: ${reason}`);
+    updateSystemStatusUI('HALTED');
+    
+    try {
+        await fetch('/api/halt', { method: 'POST' });
+        // The Cloudflare Edge has now updated Supabase. 
+        // Your Python app.py will read 'PANIC' on its next 2-second poll and market-sell everything.
+    } catch (e) {
+        console.error("Failed to send halt signal to edge.");
+    }
+}
+
+function updateSystemStatusUI(status) {
+    state.systemStatus = status;
+    const textEl = document.getElementById('ui-system-status');
+    const iconBg = document.getElementById('status-icon-bg');
+    const icon = document.getElementById('status-icon');
+
+    if (!textEl || !iconBg || !icon) return;
+
+    if (status === 'ACTIVE') {
+        textEl.innerText = 'ACTIVE';
+        textEl.className = 'text-green-400 glow-green';
+        iconBg.className = 'w-12 h-12 rounded-xl bg-green-500/20 flex items-center justify-center border border-green-500/30 flex-shrink-0';
+        icon.className = 'fas fa-shield-alt text-green-400 text-lg';
+    } else {
+        textEl.innerText = 'HALTED (SYSTEM LOCKED)';
+        textEl.className = 'text-red-500 glow-red animate-pulse';
+        iconBg.className = 'w-12 h-12 rounded-xl bg-red-500/20 flex items-center justify-center border border-red-500/30 shadow-[0_0_20px_rgba(239,68,68,0.4)] flex-shrink-0';
+        icon.className = 'fas fa-lock text-red-500 text-lg';
+    }
+}
+
+window.saveRiskConfig = async function() {
+    const inputMaxDd = document.getElementById('input-max-dd');
+    const inputMaxLoss = document.getElementById('input-max-loss');
+    if (!inputMaxDd || !inputMaxLoss) return;
+
+    const dd = parseFloat(inputMaxDd.value);
+    const loss = parseInt(inputMaxLoss.value);
+    
+    state.maxDrawdown = dd;
+    state.maxConsecutiveLosses = loss;
+    
+    await fetch('/api/risk-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ maxDrawdown: dd, maxConsecutiveLosses: loss })
+    });
+    
+    updateSystemStatusUI('ACTIVE'); // Re-arms the system
 };
