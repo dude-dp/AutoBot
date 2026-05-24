@@ -1,0 +1,14 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "autobot-edge",
+  "compatibility_date": "2026-05-24",
+  "observability": {
+    "enabled": true
+  },
+  "assets": {
+    "directory": "templates"
+  },
+  "compatibility_flags": [
+    "nodejs_compat"
+  ]
+}
