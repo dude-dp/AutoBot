@@ -12,14 +12,16 @@
     "ADMIN_USER": "dudedp",
     "ADMIN_PASS": "keymaster2026",
     "TELEGRAM_TOKEN": "8097521837:AAF1RgWie2kxadr_vFyy18IOrp7iAbt5_Mk",
-    "TELEGRAM_CHAT_ID": "1372394189"
+    "TELEGRAM_CHAT_ID": "1372394189",
+    "NOTION_API_KEY": "REDACTED",
+    "NOTION_DATABASE_ID": "36ade39df4828024ac40e06b79f23355"
   },
   "ai": {
     "binding": "AI"
   },
   "triggers": {
     "crons": [
-      "0 10 * * 1-5"
+      "15 10 * * 1-5"
     ]
   }
 }

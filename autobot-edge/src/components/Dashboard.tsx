@@ -85,10 +85,10 @@ export const Dashboard: FC<{ supabaseUrl: string; supabaseKey: string }> = ({ su
           </div>
       </div>
 
-      {/* Main Content Row */}
-      <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-4 flex-1 min-h-0">
-          {/* Equity Curve */}
-          <div class="glass-card rounded-2xl p-4 md:p-5 lg:col-span-2 flex flex-col min-h-[260px] md:min-h-[360px]">
+      {/* Main Content Grid: Equity Curve & OBI Radar */}
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-3 md:gap-4 mb-4 md:mb-5">
+          {/* Equity Curve (2/3) */}
+          <div class="glass-card rounded-2xl p-4 md:p-5 lg:col-span-2 flex flex-col min-h-[280px] md:min-h-[380px]">
               <div class="flex flex-col sm:flex-row justify-between items-start sm:items-center border-b border-white/[0.04] pb-3 mb-3 gap-2">
                   <div>
                       <h3 class="font-semibold text-gray-300 text-sm">Intraday Equity Curve</h3>
@@ -101,23 +101,59 @@ export const Dashboard: FC<{ supabaseUrl: string; supabaseKey: string }> = ({ su
               
               <div id="ai-summary-box" class="hidden mb-3 p-3 bg-blue-500/[0.04] border border-blue-500/10 rounded-xl text-xs text-blue-200/80 leading-relaxed"></div>
 
-              <div class="relative flex-1 w-full">
+              <div class="relative flex-1 w-full min-h-[180px] md:min-h-[260px]">
                   <canvas id="mobileChart"></canvas>
               </div>
           </div>
 
-          {/* Live Trade Feed */}
-          <div class="glass-card rounded-2xl p-4 md:p-5 flex flex-col min-h-[260px] md:min-h-[360px]">
-              <div class="flex justify-between items-center border-b border-white/[0.04] pb-3 mb-3">
-                  <h3 class="font-semibold text-gray-300 text-sm">Live Feed</h3>
-                  <div class="flex items-center gap-1.5">
-                      <div class="w-1.5 h-1.5 rounded-full bg-emerald-400 status-dot-active"></div>
-                      <span class="text-[10px] text-gray-600 font-medium">REALTIME</span>
+          {/* Live OBI Radar (1/3) */}
+          <div class="glass-card rounded-2xl p-4 md:p-5 flex flex-col relative overflow-hidden min-h-[280px] md:min-h-[380px]">
+              <div class="absolute -right-20 -bottom-20 w-40 h-40 bg-blue-500/10 rounded-full blur-3xl pointer-events-none"></div>
+              
+              <div class="flex justify-between items-center border-b border-white/[0.04] pb-3 mb-3 z-10">
+                  <h3 class="font-semibold text-gray-300 text-sm flex items-center">
+                      <i class="fas fa-satellite-dish text-blue-400 mr-2 animate-pulse"></i> OBI Radar
+                  </h3>
+                  <span id="macro-trend-badge" class="px-2 py-0.5 rounded bg-white/5 text-[9px] font-bold tracking-wider text-gray-400 border border-white/[0.04]">SCANNING</span>
+              </div>
+              
+              <div class="flex-1 flex flex-col justify-around z-10 gap-2">
+                  {/* CE Momentum Gauge */}
+                  <div class="relative w-full h-28 flex flex-col items-center">
+                      <p class="text-[9px] text-gray-500 font-bold uppercase tracking-widest mb-1">Call (CE) Momentum</p>
+                      <div class="relative w-full flex-1"><canvas id="ceGauge"></canvas></div>
+                      <div class="absolute bottom-0 text-center">
+                          <span id="ce-ratio" class="text-xl md:text-2xl font-bold font-mono text-gray-200">0.00x</span>
+                          <p id="ce-spread" class="text-[9px] text-gray-500 font-mono mt-0.5">Spread: ₹0.0</p>
+                      </div>
+                  </div>
+                  
+                  <div class="w-full h-px bg-white/5 my-2"></div>
+                  
+                  {/* PE Momentum Gauge */}
+                  <div class="relative w-full h-28 flex flex-col items-center">
+                      <p class="text-[9px] text-gray-500 font-bold uppercase tracking-widest mb-1">Put (PE) Momentum</p>
+                      <div class="relative w-full flex-1"><canvas id="peGauge"></canvas></div>
+                      <div class="absolute bottom-0 text-center">
+                          <span id="pe-ratio" class="text-xl md:text-2xl font-bold font-mono text-gray-200">0.00x</span>
+                          <p id="pe-spread" class="text-[9px] text-gray-500 font-mono mt-0.5">Spread: ₹0.0</p>
+                      </div>
                   </div>
               </div>
-              <div id="trades-container" class="flex-1 overflow-y-auto custom-scroll space-y-1">
-                  <div class="flex items-center justify-center h-full text-gray-600 text-xs italic">Waiting for executions...</div>
+          </div>
+      </div>
+
+      {/* Live Trade Feed Row */}
+      <div class="glass-card rounded-2xl p-4 md:p-5 flex flex-col min-h-[220px] mb-4 md:mb-5">
+          <div class="flex justify-between items-center border-b border-white/[0.04] pb-3 mb-3">
+              <h3 class="font-semibold text-gray-300 text-sm">Live Feed</h3>
+              <div class="flex items-center gap-1.5">
+                  <div class="w-1.5 h-1.5 rounded-full bg-emerald-400 status-dot-active"></div>
+                  <span class="text-[10px] text-gray-600 font-medium">REALTIME</span>
               </div>
+          </div>
+          <div id="trades-container" class="flex-1 overflow-y-auto custom-scroll space-y-1">
+              <div class="flex items-center justify-center h-full text-gray-600 text-xs italic">Waiting for executions...</div>
           </div>
       </div>
 

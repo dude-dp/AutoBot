@@ -15,6 +15,8 @@ type Bindings = {
   ADMIN_PASS: string
   TELEGRAM_TOKEN: string
   TELEGRAM_CHAT_ID: string
+  NOTION_API_KEY: string
+  NOTION_DATABASE_ID: string
   AI: any
 }
 
@@ -407,4 +409,129 @@ app.post('/api/telegram-webhook', async (c) => {
   return c.json({ status: 'success' })
 })
 
-export default app
+// Helper function to push the journal to Notion
+async function createNotionJournal(env: Bindings, dateStr: string, stats: any, aiSummary: string) {
+  const notionUrl = 'https://api.notion.com/v1/pages';
+  
+  const isGreenDay = stats.netPnl >= 0;
+  const pnlColor = isGreenDay ? "green" : "red";
+  const icon = isGreenDay ? "📈" : "🩸";
+
+  const payload = {
+    parent: { database_id: env.NOTION_DATABASE_ID },
+    icon: { type: "emoji", emoji: icon },
+    properties: {
+      "Name": { title: [{ text: { content: `Session: ${dateStr}` } }] }
+    },
+    children: [
+      {
+        object: "block",
+        type: "callout",
+        callout: {
+          rich_text: [{ type: "text", text: { content: `Net PnL: ₹${stats.netPnl.toFixed(2)} | Profit Factor: ${stats.profitFactor}x | Win Rate: ${stats.winRate}%` } }],
+          icon: { emoji: "💰" },
+          color: `${pnlColor}_background`
+        }
+      },
+      {
+        object: "block",
+        type: "heading_2",
+        heading_2: { rich_text: [{ type: "text", text: { content: "🤖 Llama 3 Microstructure Analysis" } }] }
+      },
+      {
+        object: "block",
+        type: "quote",
+        quote: { rich_text: [{ type: "text", text: { content: aiSummary } }] }
+      },
+      {
+        object: "block",
+        type: "heading_3",
+        heading_3: { rich_text: [{ type: "text", text: { content: "Execution Metrics" } }] }
+      },
+      {
+        object: "block",
+        type: "bulleted_list_item",
+        bulleted_list_item: { rich_text: [{ type: "text", text: { content: `Total Executions: ${stats.totalTrades}` } }] }
+      },
+      {
+        object: "block",
+        type: "bulleted_list_item",
+        bulleted_list_item: { rich_text: [{ type: "text", text: { content: `Gross Profit: ₹${stats.grossProfit.toFixed(2)}` } }] }
+      },
+      {
+        object: "block",
+        type: "bulleted_list_item",
+        bulleted_list_item: { rich_text: [{ type: "text", text: { content: `Gross Loss: ₹${stats.grossLoss.toFixed(2)}` } }] }
+      }
+    ]
+  };
+
+  await fetch(notionUrl, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.NOTION_API_KEY}`,
+      'Content-Type': 'application/json',
+      'Notion-Version': '2022-06-28'
+    },
+    body: JSON.stringify(payload)
+  });
+}
+
+// ==========================================
+// ⏰ CLOUDFLARE CRON TRIGGER EXPORT
+// ==========================================
+export default {
+  // Pass the standard HTTP requests to Hono
+  fetch: app.fetch,
+  
+  // Handle the automated 3:45 PM Cron Trigger
+  async scheduled(event: any, env: Bindings, ctx: any) {
+    console.log("⏰ Commencing End-of-Day Journal Generation...");
+    
+    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_KEY);
+    const today = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Kolkata"})).toISOString().split('T')[0];
+
+    // 1. Fetch Today's Log
+    const { data: trades } = await supabase.from('trade_log').select('*').eq('trade_date', today);
+    if (!trades || trades.length === 0) return;
+
+    // 2. Crunch the Math
+    const totalTrades = trades.length;
+    const wins = trades.filter(t => t.pnl > 0).length;
+    const winRate = Math.round((wins / totalTrades) * 100);
+    const netPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
+    
+    const grossProfit = trades.filter(t => t.pnl > 0).reduce((sum, t) => sum + t.pnl, 0);
+    const grossLoss = Math.abs(trades.filter(t => t.pnl < 0).reduce((sum, t) => sum + t.pnl, 0));
+    const profitFactor = grossLoss === 0 ? (grossProfit > 0 ? grossProfit : 0).toFixed(2) : (grossProfit / grossLoss).toFixed(2);
+
+    const stats = { totalTrades, winRate, netPnl, grossProfit, grossLoss, profitFactor };
+
+    // 3. Generate Llama 3 Summary
+    const tradeString = trades.map(t => `[${t.time.substring(0,5)}] ${t.ai_tag || 'TRADE'} | PnL: ₹${t.pnl}`).join('\n');
+    const prompt = `You are an institutional trading analyst. Review today's executions. Provide a max 3-sentence summary of the market microstructure based on these trades. Mention significant chop, breakouts, or drawdowns.
+    
+    Trades:
+    ${tradeString}`;
+
+    let aiSummary = "AI Analysis unavailable.";
+    try {
+      const aiResponse = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
+        messages: [{ role: 'user', content: prompt }]
+      });
+      aiSummary = aiResponse.response.trim();
+    } catch (e) {
+      console.error("Llama 3 inference failed.");
+    }
+
+    // 4. Push to Notion and Send Telegram Confirmation
+    await createNotionJournal(env, today, stats, aiSummary);
+    
+    const tgMessage = `📔 *Notion Journal Created*\n\n💰 Net PnL: ₹${netPnl.toFixed(2)}\n📊 Profit Factor: ${profitFactor}x\n\nThe full session breakdown and AI analysis has been archived in your workspace.`;
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text: tgMessage, parse_mode: 'Markdown' })
+    });
+  }
+}

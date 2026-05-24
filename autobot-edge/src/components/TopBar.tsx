@@ -13,6 +13,11 @@ export const TopBar: FC<{ title: string }> = ({ title }) => {
       </div>
 
       <div class="flex items-center gap-2 flex-shrink-0">
+        {/* The Audio Squawk Box Arming Switch */}
+        <button id="squawk-btn" onclick="toggleSquawk()" class="flex items-center px-3 py-1.5 md:px-4 md:py-1.5 rounded-full font-bold bg-gray-900/40 text-gray-400 border border-gray-500/30 text-[10px] md:text-xs transition-colors hover:bg-white/5 active:scale-95 shadow-lg flex-shrink-0">
+            <i class="fas fa-volume-mute mr-1.5 md:mr-2"></i> SQUAWK OFF
+        </button>
+
         {/* Sync Status */}
         <div id="sync-indicator" class="glass-card px-3 py-1.5 md:px-3.5 md:py-1.5 rounded-full flex items-center gap-2 text-[11px] md:text-xs transition-colors duration-300">
           <div class="w-1.5 h-1.5 rounded-full bg-emerald-400 status-dot-active"></div>

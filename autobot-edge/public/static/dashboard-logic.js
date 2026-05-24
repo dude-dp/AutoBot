@@ -4,6 +4,8 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 const supabase = createClient(window.ENV.SUPABASE_URL, window.ENV.SUPABASE_KEY);
 
 let myChart = null;
+let ceGauge = null;
+let peGauge = null;
 
 // State management for live calculations
 let state = {
@@ -76,6 +78,7 @@ async function fetchInitialData() {
         updateTopMetrics();
         renderChart(data.chartLabels, data.chartData);
         renderTable(data.tableTrades);
+        initGauges();
         
         // Start WebSocket Listener
         setupRealtime();
@@ -83,6 +86,76 @@ async function fetchInitialData() {
     } catch (err) {
         setSyncStatus('OFFLINE', 'yellow');
     }
+}
+
+// ==========================================
+// 🔊 THE SQUAWK BOX (AUDIO ENGINE)
+// ==========================================
+let squawkEnabled = false;
+let audioCtx = null;
+
+// Arm or Disarm the Audio Engine (Bypasses Browser Autoplay Blocks)
+window.toggleSquawk = function() {
+    squawkEnabled = !squawkEnabled;
+    const btn = document.getElementById('squawk-btn');
+    
+    if (squawkEnabled) {
+        btn.className = 'flex items-center px-3 py-1.5 md:px-4 md:py-1.5 rounded-full font-bold bg-blue-900/40 text-blue-400 border border-blue-500/30 text-[10px] md:text-xs shadow-[0_0_15px_rgba(59,130,246,0.3)] transition-colors flex-shrink-0';
+        btn.innerHTML = '<i class="fas fa-volume-up mr-1.5 md:mr-2"></i> SQUAWK ON';
+        
+        // Prime the Web Audio API
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        if (audioCtx.state === 'suspended') audioCtx.resume();
+        
+        // Prime the Speech API (silent utterance to unlock it)
+        const prime = new SpeechSynthesisUtterance("");
+        prime.volume = 0;
+        window.speechSynthesis.speak(prime);
+        
+        speak("Squawk box armed. Listening to order book.");
+    } else {
+        btn.className = 'flex items-center px-3 py-1.5 md:px-4 md:py-1.5 rounded-full font-bold bg-gray-900/40 text-gray-400 border border-gray-500/30 text-[10px] md:text-xs transition-colors hover:bg-white/5 active:scale-95 shadow-lg flex-shrink-0';
+        btn.innerHTML = '<i class="fas fa-volume-mute mr-1.5 md:mr-2"></i> SQUAWK OFF';
+        window.speechSynthesis.cancel(); // Kill any speaking immediately
+    }
+};
+
+// Text-to-Speech Wrapper
+function speak(text) {
+    if (!squawkEnabled) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.rate = 1.05; // Slightly faster for an institutional "radio" feel
+    utterance.pitch = 0.95;
+    window.speechSynthesis.speak(utterance);
+}
+
+// Synthesized Klaxon Alarm (No MP3 required)
+function playKlaxon() {
+    if (!squawkEnabled) return;
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+
+    // Generate 4 harsh sawtooth pulses
+    for (let i = 0; i < 4; i++) {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sawtooth';
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        
+        const startTime = audioCtx.currentTime + (i * 0.8);
+        osc.frequency.setValueAtTime(400, startTime);
+        osc.frequency.linearRampToValueAtTime(800, startTime + 0.4);
+        
+        gain.gain.setValueAtTime(0.3, startTime);
+        gain.gain.linearRampToValueAtTime(0, startTime + 0.7);
+        
+        osc.start(startTime);
+        osc.stop(startTime + 0.7);
+    }
+    
+    // Announce the breach right after the siren finishes
+    setTimeout(() => speak("Warning. Circuit breaker tripped. System locked."), 3200);
 }
 
 // Tag rendering helper
@@ -124,6 +197,14 @@ function handleLiveTagUpdate(trade) {
             setTimeout(() => tagSpan.classList.remove('scale-110'), 200);
         }
     });
+
+    // Trigger TTS for AI Resolution
+    if (trade.ai_tag && trade.ai_tag !== 'Analyzing...') {
+        const amount = Math.abs(trade.pnl).toFixed(0);
+        const resultText = trade.pnl >= 0 ? `Profit ${amount} rupees` : `Loss ${amount} rupees`;
+        const cleanTag = trade.ai_tag.replace('_', ' '); // Fixes "STOP_HUNT" to "STOP HUNT"
+        speak(`Trade closed. ${resultText}. Categorized as ${cleanTag}.`);
+    }
 }
 
 // 3. WebSocket Real-Time Subscription
@@ -143,6 +224,85 @@ function setupRealtime() {
                 setSyncStatus('REALTIME', 'green');
             }
         });
+
+    supabase
+        .channel('telemetry_updates')
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'telemetry' }, (payload) => {
+            handleLiveTelemetry(payload.new);
+        })
+        .subscribe();
+}
+
+function initGauges() {
+    const gaugeOptions = {
+        responsive: true, maintainAspectRatio: false,
+        circumference: 180, rotation: 270, cutout: '80%',
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        animation: { duration: 500, easing: 'easeOutQuart' }
+    };
+    
+    const ceCanvas = document.getElementById('ceGauge');
+    const peCanvas = document.getElementById('peGauge');
+    
+    if (ceCanvas) {
+        ceGauge = new Chart(ceCanvas.getContext('2d'), {
+            type: 'doughnut',
+            data: { labels: ['Bids', 'Asks'], datasets: [{ data: [1, 1], backgroundColor: ['#10b981', '#ef4444'], borderWidth: 0 }] },
+            options: gaugeOptions
+        });
+    }
+    
+    if (peCanvas) {
+        peGauge = new Chart(peCanvas.getContext('2d'), {
+            type: 'doughnut',
+            data: { labels: ['Bids', 'Asks'], datasets: [{ data: [1, 1], backgroundColor: ['#10b981', '#ef4444'], borderWidth: 0 }] },
+            options: gaugeOptions
+        });
+    }
+}
+
+function handleLiveTelemetry(data) {
+    if (ceGauge) {
+        ceGauge.data.datasets[0].data = [data.ce_bids || 1, data.ce_asks || 1];
+        ceGauge.update();
+        const ceRatio = data.ce_asks > 0 ? (data.ce_bids / data.ce_asks).toFixed(2) : "0.00";
+        const ceEl = document.getElementById('ce-ratio');
+        if (ceEl) {
+            ceEl.innerText = ceRatio + 'x';
+            ceEl.className = `text-xl md:text-2xl font-bold font-mono transition-colors ${parseFloat(ceRatio) >= 1.2 ? 'text-green-400 glow-green' : 'text-gray-200'}`;
+        }
+        const ceSpreadEl = document.getElementById('ce-spread');
+        if (ceSpreadEl) {
+            ceSpreadEl.innerText = `Spread: ₹${(data.ce_spread||0).toFixed(1)}`;
+        }
+    }
+    
+    if (peGauge) {
+        peGauge.data.datasets[0].data = [data.pe_bids || 1, data.pe_asks || 1];
+        peGauge.update();
+        const peRatio = data.pe_asks > 0 ? (data.pe_bids / data.pe_asks).toFixed(2) : "0.00";
+        const peEl = document.getElementById('pe-ratio');
+        if (peEl) {
+            peEl.innerText = peRatio + 'x';
+            peEl.className = `text-xl md:text-2xl font-bold font-mono transition-colors ${parseFloat(peRatio) >= 1.2 ? 'text-green-400 glow-green' : 'text-gray-200'}`;
+        }
+        const peSpreadEl = document.getElementById('pe-spread');
+        if (peSpreadEl) {
+            peSpreadEl.innerText = `Spread: ₹${(data.pe_spread||0).toFixed(1)}`;
+        }
+    }
+
+    const badge = document.getElementById('macro-trend-badge');
+    if (badge && data.macro_trend) {
+        badge.innerText = data.macro_trend;
+        if (data.macro_trend === 'BULLISH') {
+            badge.className = 'px-2 py-0.5 rounded bg-green-500/20 text-[9px] font-bold tracking-wider text-green-400 border border-green-500/30';
+        } else if (data.macro_trend === 'BEARISH') {
+            badge.className = 'px-2 py-0.5 rounded bg-red-500/20 text-[9px] font-bold tracking-wider text-red-400 border border-red-500/30';
+        } else {
+            badge.className = 'px-2 py-0.5 rounded bg-white/5 text-[9px] font-bold tracking-wider text-gray-400 border border-white/[0.04]';
+        }
+    }
 }
 
 // 4. Live Execution Handler
@@ -237,6 +397,10 @@ function handleLiveExecution(trade) {
         
         tbody.insertBefore(newRow, tbody.firstChild);
     }
+
+    // Trigger TTS for Execution
+    const action = trade.position_type === 'CE' ? 'Long Call' : 'Long Put';
+    speak(`Execution recorded. ${action}. Analyzing microstructure.`);
 
     // ⚡ AUTONOMOUS CIRCUIT BREAKER ⚡
     if (state.systemStatus === 'ACTIVE') {
@@ -447,6 +611,7 @@ window.analyzeDay = async function() {
 
 // Halt + System Status
 async function triggerHalt(reason) {
+    playKlaxon(); // Sound the alarm!
     console.warn(`🛑 CIRCUIT BREAKER TRIPPED: ${reason}`);
     updateSystemStatusUI('HALTED');
     

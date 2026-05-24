@@ -467,7 +467,10 @@ def get_breakeven_points(buy_price, quantity):
     total_charges = brokerage + txn_charge + gst + stt + stamp_duty + sebi
     return round(total_charges / quantity, 2)
 
+last_telemetry_push = 0
+
 def on_message(message):
+    global last_telemetry_push
     now = datetime.now()
     feeds = message.get("feeds", {})
     
@@ -506,6 +509,29 @@ def on_message(message):
             pe_bids, pe_asks = sum(l['bq'] for l in depth), sum(l['aq'] for l in depth)
             if depth[0]['aq'] > 0: pe_spread = depth[0]['ap'] - depth[0]['bp']
     except: pass
+
+    # ==========================================
+    # 📡 THE TELEMETRY HEARTBEAT
+    # ==========================================
+    if time.time() - last_telemetry_push >= 3.0:
+        last_telemetry_push = time.time()
+        
+        def push_telemetry(ce_b, ce_a, ce_s, pe_b, pe_a, pe_s, trend):
+            if not supabase: return
+            try:
+                supabase.table('telemetry').update({
+                    "ce_bids": ce_b, "ce_asks": ce_a, "ce_spread": ce_s,
+                    "pe_bids": pe_b, "pe_asks": pe_a, "pe_spread": pe_s,
+                    "macro_trend": trend,
+                    "updated_at": datetime.now().isoformat()
+                }).eq('id', 1).execute()
+            except Exception: pass
+            
+        threading.Thread(
+            target=push_telemetry, 
+            args=(ce_bids, ce_asks, ce_spread, pe_bids, pe_asks, pe_spread, state.get("macro_trend", "SCANNING")), 
+            daemon=True
+        ).start()
 
     if state.get("pending_order"): return
     if not state["in_position"] and state["last_traded_candle"] == state["current_candle_minute"]: return
