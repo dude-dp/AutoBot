@@ -17,19 +17,19 @@ export const Sidebar: FC = () => {
         </div>
 
         <nav class="flex flex-col gap-2 px-3">
-          <a href="/" class="flex items-center gap-4 px-3 py-3 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.15)] group">
+          <a hx-get="/" hx-target="main" hx-push-url="true" class="cursor-pointer flex items-center gap-4 px-3 py-3 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.15)] group">
             <i class="fas fa-layer-group w-5 text-center transition-transform group-hover:scale-110"></i>
             <span class="sidebar-text font-medium text-sm">Dashboard</span>
           </a>
-          <a href="/orders" class="flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
+          <a hx-get="/orders" hx-target="main" hx-push-url="true" class="cursor-pointer flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
             <i class="fas fa-list-ul w-5 text-center transition-transform group-hover:scale-110"></i>
             <span class="sidebar-text font-medium text-sm">Orders</span>
           </a>
-          <a href="/statistics" class="flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
+          <a hx-get="/statistics" hx-target="main" hx-push-url="true" class="cursor-pointer flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
             <i class="fas fa-chart-pie w-5 text-center transition-transform group-hover:scale-110"></i>
             <span class="sidebar-text font-medium text-sm">Statistics</span>
           </a>
-          <a href="/simulations" class="flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
+          <a hx-get="/simulations" hx-target="main" hx-push-url="true" class="cursor-pointer flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
             <i class="fas fa-vial w-5 text-center transition-transform group-hover:scale-110"></i>
             <span class="sidebar-text font-medium text-sm">Simulations</span>
           </a>

@@ -9,6 +9,7 @@ export const Layout: FC<{ title: string; children: any }> = ({ title, children }
         <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
         <title>{title}</title>
         <script src="https://cdn.tailwindcss.com"></script>
+        <script src="https://unpkg.com/htmx.org@1.9.10"></script>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet" />
         <script dangerouslySetInnerHTML={{
@@ -17,7 +18,9 @@ export const Layout: FC<{ title: string; children: any }> = ({ title, children }
             theme: {
               extend: {
                 fontFamily: { sans: ['Inter', 'sans-serif'] },
-                colors: { base: '#1a1020', glass: 'rgba(255, 255, 255, 0.03)', glassBorder: 'rgba(255, 255, 255, 0.08)' }
+                colors: { base: '#1a1020', glass: 'rgba(255, 255, 255, 0.03)', glassBorder: 'rgba(255, 255, 255, 0.08)' },
+                animation: { 'fade-in': 'fadeIn 0.3s ease-out' },
+                keyframes: { fadeIn: { '0%': { opacity: 0, transform: 'translateY(10px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } } }
               }
             }
           }

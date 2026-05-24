@@ -3,6 +3,7 @@ import { basicAuth } from 'hono/basic-auth'
 import { createClient } from '@supabase/supabase-js'
 import { Layout } from './components/Layout'
 import { TopBar } from './components/TopBar'
+import { Orders } from './components/Orders'
 
 type Bindings = {
   SUPABASE_URL: string
@@ -24,8 +25,10 @@ app.use('*', async (c, next) => {
 
 // Dashboard Route
 app.get('/', async (c) => {
-  return c.html(
-    <Layout title="AutoBot Edge | Dashboard">
+  const isHX = c.req.header('HX-Request') === 'true'
+  
+  const content = (
+    <div class="animate-fade-in flex flex-col h-full">
       <TopBar title="Dashboard" />
       
       {/* Metrics Row */}
@@ -223,20 +226,28 @@ app.get('/', async (c) => {
         setInterval(fetchLiveData, 5000);
         `
       }} />
-    </Layout>
+    </div>
   )
+
+  return c.html(isHX ? content : <Layout title="AutoBot Edge | Dashboard">{content}</Layout>)
 })
 
 // Orders Route
 app.get('/orders', async (c) => {
-  return c.html(
-    <Layout title="AutoBot Edge | Orders">
-      <TopBar title="Order History" />
-      <div class="glass-card rounded-3xl p-6">
-        <p class="text-gray-400">Database connection to Supabase pending...</p>
-      </div>
-    </Layout>
-  )
+  const isHX = c.req.header('HX-Request') === 'true'
+  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
+  
+  const { data: trades, error } = await supabase
+    .from('trade_log')
+    .select('*')
+    .order('id', { ascending: false })
+    .limit(100)
+
+  if (error) console.error("Supabase fetch error:", error)
+
+  const content = <Orders trades={trades || []} />
+  
+  return c.html(isHX ? content : <Layout title="AutoBot Edge | Orders">{content}</Layout>)
 })
 
 // API Endpoints
