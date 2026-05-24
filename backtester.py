@@ -1,5 +1,14 @@
 import pandas as pd
 from datetime import datetime
+import os
+from dotenv import load_dotenv
+from supabase import create_client, Client
+
+load_dotenv()
+url: str = os.getenv("SUPABASE_URL")
+key: str = os.getenv("SUPABASE_KEY")
+supabase: Client = create_client(url, key) if url and key else None
+
 
 # --- BACKTEST PARAMETERS ---
 CSV_FILE = "market_data_2026-05-25.csv" # Change to your actual file
@@ -98,9 +107,29 @@ def run_backtest():
     # --- PRINT REPORT ---
     for log in trade_log: print(log)
     print("-" * 60)
-    print(f"🏆 Total Trades: {wins + losses}")
+    total_trades = wins + losses
+    win_rate = int((wins / total_trades) * 100) if total_trades > 0 else 0
+    
+    print(f"🏆 Total Trades: {total_trades}")
     print(f"✅ Wins: {wins} | ❌ Losses: {losses}")
     print(f"💰 NET PnL: ₹{total_pnl:.2f}")
 
+    # Push to Supabase
+    if supabase:
+        try:
+            supabase.table('backtest_runs').insert({
+                "target": TARGET_PTS,
+                "stop_loss": STOP_LOSS_PTS,
+                "trail_trigger": TRAIL_TRIGGER,
+                "trail_dist": TRAIL_DIST,
+                "total_trades": total_trades,
+                "win_rate": win_rate,
+                "net_pnl": total_pnl
+            }).execute()
+            print("✅ Backtest results synced to Cloudflare Edge Dashboard.")
+        except Exception as e:
+            print(f"❌ Failed to sync to cloud: {e}")
+
 if __name__ == "__main__":
     run_backtest()
+

@@ -446,25 +446,6 @@ def on_message(message):
 
     if state["nifty_ltp"] == 0.0 or not state["bot_active"]: return
 
-    # ==========================================
-    # ⚠️ EOD AUTO-SQUARE OFF (3:15 PM)
-    # ==========================================
-    if now.hour == 15 and now.minute >= 15:
-        if state["bot_active"]:
-            add_activity("🕒 3:15 PM cutoff reached. Initiating EOD Shutdown.", "warn")
-            state["bot_active"] = False # Hard stop on all new entries
-            
-            # Flatten any open positions instantly
-            if state["in_position"]:
-                token_to_sell = CE_TOKEN if state["position_type"] == "CE" else PE_TOKEN
-                logging.critical(f"🚨 EOD SQUARE OFF: Flattening {state['position_type']} position.")
-                fire_market_order_async(token_to_sell, "SELL")
-                state["in_position"] = False
-                state["pending_order"] = False
-            
-            # Telegram logic offloaded to Cloudflare Edge
-        return # Block all further tick processing for the day
-
     # Tilt Breaker Check
     if state["timeout_until"]: return
 

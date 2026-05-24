@@ -3,6 +3,9 @@
   "name": "autobot-edge",
   "main": "src/index.tsx",
   "compatibility_date": "2026-05-23",
+  "assets": {
+    "directory": "./public"
+  },
   "vars": {
     "SUPABASE_URL": "https://nicqvlhykzqssrhejysp.supabase.co",
     "SUPABASE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5pY3F2bGh5a3pxc3NyaGVqeXNwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1NjI4OTgsImV4cCI6MjA5NTEzODg5OH0.3y4UeEXFvYJSv7QN2ivEAF4A_toNXQndo9Ajsnukc34",

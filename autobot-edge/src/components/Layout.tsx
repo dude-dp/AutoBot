@@ -1,7 +1,7 @@
 import type { FC } from 'hono/jsx'
 import { Sidebar } from './Sidebar'
 
-export const Layout: FC<{ title: string; children: any }> = ({ title, children }) => {
+export const Layout: FC<{ title: string; currentPath: string; children: any }> = ({ title, currentPath, children }) => {
   return (
     <html lang="en">
       <head>
@@ -19,7 +19,7 @@ export const Layout: FC<{ title: string; children: any }> = ({ title, children }
               extend: {
                 fontFamily: { sans: ['Inter', 'sans-serif'] },
                 colors: { base: '#1a1020', glass: 'rgba(255, 255, 255, 0.03)', glassBorder: 'rgba(255, 255, 255, 0.08)' },
-                animation: { 'fade-in': 'fadeIn 0.3s ease-out' },
+                animation: { 'fade-in': 'fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards' },
                 keyframes: { fadeIn: { '0%': { opacity: 0, transform: 'translateY(10px)' }, '100%': { opacity: 1, transform: 'translateY(0)' } } }
               }
             }
@@ -30,10 +30,64 @@ export const Layout: FC<{ title: string; children: any }> = ({ title, children }
           __html: `
           @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
           body { background-color: #1a1020; color: #f8fafc; overflow: hidden; }
-          .glow-orb-1 { position: absolute; top: -10%; right: -5%; width: 70vw; height: 70vh; background: radial-gradient(circle, rgba(245,158,11,0.25) 0%, rgba(217,119,6,0) 70%); filter: blur(80px); z-index: -1; }
-          .glow-orb-2 { position: absolute; bottom: -20%; left: -10%; width: 60vw; height: 60vh; background: radial-gradient(circle, rgba(147,51,234,0.2) 0%, rgba(126,34,206,0) 70%); filter: blur(100px); z-index: -1; }
-          .glass-panel { background: rgba(30, 20, 35, 0.4); backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px); border: 1px solid rgba(255, 255, 255, 0.05); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5); }
-          .glass-card { background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%); backdrop-filter: blur(16px); border: 1px solid rgba(255,255,255,0.1); box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3); }
+          
+          /* Ambient Liquid Backgrounds */
+          .glow-orb-1 {
+              position: fixed; top: -10%; right: -5%; width: 70vw; height: 70vh;
+              background: radial-gradient(circle, rgba(245,158,11,0.15) 0%, rgba(217,119,6,0) 70%);
+              filter: blur(90px); z-index: -1;
+              animation: float 20s ease-in-out infinite alternate;
+          }
+          .glow-orb-2 {
+              position: fixed; bottom: -20%; left: -10%; width: 60vw; height: 60vh;
+              background: radial-gradient(circle, rgba(147,51,234,0.12) 0%, rgba(126,34,206,0) 70%);
+              filter: blur(100px); z-index: -1;
+              animation: float 25s ease-in-out infinite alternate-reverse;
+          }
+
+          @keyframes float {
+              0% { transform: translate(0, 0) scale(1); }
+              100% { transform: translate(-30px, 30px) scale(1.1); }
+          }
+
+          @keyframes fadeIn {
+              from { opacity: 0; transform: translateY(10px); }
+              to { opacity: 1; transform: translateY(0); }
+          }
+          .animate-fade-in { animation: fadeIn 0.4s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+          /* Premium Glass Cards */
+          .glass-panel {
+              background: rgba(26, 16, 32, 0.6);
+              backdrop-filter: blur(28px);
+              -webkit-backdrop-filter: blur(28px);
+              border-right: 1px solid rgba(255, 255, 255, 0.05);
+              box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+          }
+          .glass-card {
+              background: linear-gradient(145deg, rgba(255,255,255,0.05) 0%, rgba(255,255,255,0.01) 100%);
+              backdrop-filter: blur(20px);
+              border: 1px solid rgba(255,255,255,0.08);
+              box-shadow: 0 10px 40px -10px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255,255,255,0.1);
+          }
+
+          /* Flash animations for Real-Time execution */
+          @keyframes flashProfit {
+              0% { background-color: rgba(16, 185, 129, 0.8); box-shadow: 0 0 30px rgba(16, 185, 129, 0.8); transform: scale(1.02); }
+              100% { background-color: transparent; box-shadow: none; transform: scale(1); }
+          }
+          @keyframes flashLoss {
+              0% { background-color: rgba(239, 68, 68, 0.8); box-shadow: 0 0 30px rgba(239, 68, 68, 0.8); transform: scale(1.02); }
+              100% { background-color: transparent; box-shadow: none; transform: scale(1); }
+          }
+
+          .flash-profit { animation: flashProfit 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+          .flash-loss { animation: flashLoss 1s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+
+          /* Typography Glows */
+          .glow-green { text-shadow: 0 0 20px rgba(16, 185, 129, 0.4); }
+          .glow-red { text-shadow: 0 0 20px rgba(239, 68, 68, 0.4); }
+
           #sidebar { transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
           .sidebar-text { transition: opacity 0.2s, width 0.2s; white-space: nowrap; }
           .sidebar-collapsed { width: 5rem; }
@@ -48,7 +102,7 @@ export const Layout: FC<{ title: string; children: any }> = ({ title, children }
         <div class="glow-orb-1"></div>
         <div class="glow-orb-2"></div>
         
-        <Sidebar />
+        <Sidebar currentPath={currentPath} />
         
         <main class="flex-1 h-full overflow-y-auto custom-scroll p-4 md:p-8 relative z-10">
           {children}
@@ -71,6 +125,23 @@ export const Layout: FC<{ title: string; children: any }> = ({ title, children }
                   }
               }
           }
+
+          function updateActiveSidebarLink() {
+              const path = window.location.pathname;
+              const links = document.querySelectorAll('#sidebar nav a');
+              links.forEach(link => {
+                  const href = link.getAttribute('hx-get');
+                  if (href === path) {
+                      link.className = 'cursor-pointer flex items-center gap-4 px-4 py-3 rounded-2xl transition-all group font-medium text-sm bg-blue-500/20 text-blue-400 border border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.15)]';
+                  } else {
+                      link.className = 'cursor-pointer flex items-center gap-4 px-4 py-3 rounded-2xl transition-all group font-medium text-sm text-gray-400 hover:bg-white/5 hover:text-white border border-transparent';
+                  }
+              });
+          }
+
+          document.body.addEventListener('htmx:afterSwap', updateActiveSidebarLink);
+          // Run immediately
+          updateActiveSidebarLink();
           `
         }} />
       </body>
