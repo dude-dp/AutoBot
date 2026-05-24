@@ -14,3 +14,12 @@ fi
 # But you can auto-start the UI server:
 nohup python app.py > bot_output.log 2>&1 &
 echo "Bot started in background. UI available at http://localhost:8000"
+
+# kill bot
+# pkill -f "python app.py"
+# or
+# kill -9 $(pgrep -f "python app.py")
+# or
+# lsof -ti:8000 | xargs kill -9 2>/dev/null
+# or
+# fuser -k 8000/tcp

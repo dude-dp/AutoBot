@@ -462,17 +462,7 @@ def on_message(message):
                 state["in_position"] = False
                 state["pending_order"] = False
             
-            # Calculate Win Rate
-            win_rate = int((state["daily_wins"] / state["daily_trades"]) * 100) if state["daily_trades"] > 0 else 0
-            
-            # Fire Telegram Summary
-            send_telegram_alert(
-                f"📊 *EOD Summary - {date.today().isoformat()}*\n\n"
-                f"💰 Net PnL: ₹{state['daily_pnl']}\n"
-                f"📈 Total Trades: {state['daily_trades']}\n"
-                f"🎯 Win Rate: {win_rate}%\n"
-                f"🤖 System entering hibernation until tomorrow."
-            )
+            # Telegram logic offloaded to Cloudflare Edge
         return # Block all further tick processing for the day
 
     # Tilt Breaker Check

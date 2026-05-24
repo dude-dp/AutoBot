@@ -1,38 +1,17 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "autobot-edge",
-  "main": "src/index.tsx",
+  "pages_build_output_dir": "public",
   "compatibility_date": "2026-05-23",
-  // "compatibility_flags": [
-  //   "nodejs_compat"
-  // ],
   "vars": {
-    "SUPABASE_URL": "https://nicqvlhykzqssrhejysp.supabase.co"
+    "SUPABASE_URL": "https://nicqvlhykzqssrhejysp.supabase.co",
+    "SUPABASE_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5pY3F2bGh5a3pxc3NyaGVqeXNwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk1NjI4OTgsImV4cCI6MjA5NTEzODg5OH0.3y4UeEXFvYJSv7QN2ivEAF4A_toNXQndo9Ajsnukc34",
+    "ADMIN_USER": "dudedp",
+    "ADMIN_PASS": "keymaster2026",
+    "TELEGRAM_TOKEN": "8097521837:AAF1RgWie2kxadr_vFyy18IOrp7iAbt5_Mk",
+    "TELEGRAM_CHAT_ID": "1372394189"
   },
-  // "kv_namespaces": [
-  //   {
-  //     "binding": "MY_KV_NAMESPACE",
-  //     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-  //   }
-  // ],
-  // "r2_buckets": [
-  //   {
-  //     "binding": "MY_BUCKET",
-  //     "bucket_name": "my-bucket"
-  //   }
-  // ],
-  // "d1_databases": [
-  //   {
-  //     "binding": "MY_DB",
-  //     "database_name": "my-database",
-  //     "database_id": ""
-  //   }
-  // ],
-  // "ai": {
-  //   "binding": "AI"
-  // },
-  // "observability": {
-  //   "enabled": true,
-  //   "head_sampling_rate": 1
-  // }
+  "ai": {
+    "binding": "AI"
+  }
 }

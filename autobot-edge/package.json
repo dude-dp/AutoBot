@@ -2,8 +2,8 @@
   "name": "autobot-edge",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy --minify",
+    "dev": "wrangler pages dev public",
+    "deploy": "wrangler pages deploy public --project-name autobot-edge",
     "cf-typegen": "wrangler types --env-interface CloudflareBindings"
   },
   "dependencies": {

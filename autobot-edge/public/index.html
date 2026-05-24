@@ -1,0 +1,352 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoBot Edge Terminal</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet" />
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: { sans: ['Inter', 'sans-serif'] },
+                    colors: {
+                        base: '#1a1020', /* Deep dark purple base */
+                        glass: 'rgba(255, 255, 255, 0.03)',
+                        glassBorder: 'rgba(255, 255, 255, 0.08)',
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        
+        body { background-color: #1a1020; color: #f8fafc; overflow: hidden; }
+        
+        /* The Liquid Glass Effect Backgrounds */
+        .glow-orb-1 {
+            position: absolute; top: -10%; right: -5%; width: 70vw; height: 70vh;
+            background: radial-gradient(circle, rgba(245,158,11,0.25) 0%, rgba(217,119,6,0) 70%);
+            filter: blur(80px); z-index: -1;
+        }
+        .glow-orb-2 {
+            position: absolute; bottom: -20%; left: -10%; width: 60vw; height: 60vh;
+            background: radial-gradient(circle, rgba(147,51,234,0.2) 0%, rgba(126,34,206,0) 70%);
+            filter: blur(100px); z-index: -1;
+        }
+
+        /* Glassmorphism Utilities */
+        .glass-panel {
+            background: rgba(30, 20, 35, 0.4);
+            backdrop-filter: blur(24px);
+            -webkit-backdrop-filter: blur(24px);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+        }
+        
+        .glass-card {
+            background: linear-gradient(135deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.02) 100%);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(255,255,255,0.1);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+        }
+
+        /* Sidebar Transition */
+        #sidebar { transition: width 0.3s cubic-bezier(0.4, 0, 0.2, 1); }
+        .sidebar-text { transition: opacity 0.2s, width 0.2s; white-space: nowrap; }
+        .sidebar-collapsed { width: 5rem; }
+        .sidebar-collapsed .sidebar-text { opacity: 0; width: 0; overflow: hidden; }
+        
+        /* Custom Scrollbar for inner content */
+        .custom-scroll::-webkit-scrollbar { width: 6px; }
+        .custom-scroll::-webkit-scrollbar-track { background: transparent; }
+        .custom-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+    </style>
+</head>
+<body class="h-screen w-screen flex antialiased selection:bg-orange-500/30">
+
+    <div class="glow-orb-1"></div>
+    <div class="glow-orb-2"></div>
+
+    <aside id="sidebar" class="w-64 h-full glass-panel flex flex-col justify-between py-6 relative z-20">
+        <div>
+            <div class="flex items-center justify-between px-6 mb-10">
+                <div class="flex items-center gap-3">
+                    <div class="w-8 h-8 rounded-full bg-gradient-to-tr from-orange-400 to-amber-300 flex items-center justify-center shadow-lg">
+                        <i class="fas fa-robot text-black text-sm"></i>
+                    </div>
+                    <span class="sidebar-text font-bold text-lg tracking-wide">AutoBot</span>
+                </div>
+                <button onclick="toggleSidebar()" class="text-gray-400 hover:text-white transition-colors">
+                    <i class="fas fa-bars"></i>
+                </button>
+            </div>
+
+            <nav class="flex flex-col gap-2 px-3">
+                <a href="#" class="flex items-center gap-4 px-3 py-3 rounded-xl bg-blue-500/20 text-blue-400 border border-blue-500/30 shadow-[0_0_15px_rgba(59,130,246,0.15)] group">
+                    <i class="fas fa-layer-group w-5 text-center transition-transform group-hover:scale-110"></i>
+                    <span class="sidebar-text font-medium text-sm">Dashboard</span>
+                </a>
+                <a href="#" class="flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
+                    <i class="fas fa-chart-pie w-5 text-center transition-transform group-hover:scale-110"></i>
+                    <span class="sidebar-text font-medium text-sm">Statistics</span>
+                </a>
+                <a href="#" class="flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
+                    <i class="fas fa-chart-line w-5 text-center transition-transform group-hover:scale-110"></i>
+                    <span class="sidebar-text font-medium text-sm">Charts</span>
+                </a>
+                <a href="#" class="flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
+                    <i class="fas fa-list-ul w-5 text-center transition-transform group-hover:scale-110"></i>
+                    <span class="sidebar-text font-medium text-sm">Orders</span>
+                </a>
+                <a href="#" class="flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-white/5 hover:text-white transition-all group">
+                    <i class="fas fa-user-circle w-5 text-center transition-transform group-hover:scale-110"></i>
+                    <span class="sidebar-text font-medium text-sm">Account</span>
+                </a>
+            </nav>
+        </div>
+
+        <div class="px-3">
+            <a href="#" onclick="killSwitch()" class="flex items-center gap-4 px-3 py-3 rounded-xl text-gray-400 hover:bg-red-500/20 hover:text-red-400 transition-all group">
+                <i class="fas fa-power-off w-5 text-center transition-transform group-hover:scale-110"></i>
+                <span class="sidebar-text font-medium text-sm" id="kill-switch-text">Kill Switch</span>
+            </a>
+        </div>
+    </aside>
+
+    <main class="flex-1 h-full overflow-y-auto custom-scroll p-4 md:p-8 relative z-10">
+        
+        <header class="flex justify-between items-center mb-8">
+            <h2 class="text-2xl font-semibold tracking-tight text-white/90">Dashboard</h2>
+            <div class="flex gap-3">
+                <div class="glass-card px-4 py-2 rounded-full flex items-center gap-2 text-sm">
+                    <div id="sync-dot" class="w-2 h-2 rounded-full bg-green-400 animate-pulse shadow-[0_0_8px_#4ade80]"></div>
+                    <span id="sync-text" class="text-gray-300 font-medium">Edge Synced</span>
+                </div>
+            </div>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+            
+            <div class="glass-card rounded-3xl p-6 relative overflow-hidden group hover:border-white/20 transition-colors">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400/20 to-emerald-600/10 flex items-center justify-center border border-emerald-500/20">
+                        <i class="fas fa-wallet text-emerald-400"></i>
+                    </div>
+                    <span class="text-xs font-semibold px-2 py-1 bg-emerald-500/20 text-emerald-300 rounded-lg">LIVE</span>
+                </div>
+                <p class="text-sm text-gray-400 font-medium mb-1">Available Capital</p>
+                <h3 class="text-2xl font-bold font-mono tracking-tight">₹40,000</h3>
+            </div>
+
+            <div class="glass-card rounded-3xl p-6 relative overflow-hidden hover:border-white/20 transition-colors">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-400/20 to-blue-600/10 flex items-center justify-center border border-blue-500/20">
+                        <i class="fas fa-crosshairs text-blue-400"></i>
+                    </div>
+                </div>
+                <p class="text-sm text-gray-400 font-medium mb-1">Win Rate</p>
+                <h3 id="ui-winrate" class="text-2xl font-bold font-mono tracking-tight">...</h3>
+            </div>
+
+            <div class="glass-card rounded-3xl p-6 relative overflow-hidden hover:border-white/20 transition-colors">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-400/20 to-purple-600/10 flex items-center justify-center border border-purple-500/20">
+                        <i class="fas fa-bolt text-purple-400"></i>
+                    </div>
+                </div>
+                <p class="text-sm text-gray-400 font-medium mb-1">Executions</p>
+                <h3 id="ui-trades" class="text-2xl font-bold font-mono tracking-tight">...</h3>
+            </div>
+
+            <div id="pnl-card" class="rounded-3xl p-6 relative overflow-hidden bg-gradient-to-br border shadow-lg transition-colors duration-500">
+                <div class="flex justify-between items-start mb-4">
+                    <div class="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center backdrop-blur-md">
+                        <i class="fas fa-chart-line text-white"></i>
+                    </div>
+                    <button onclick="analyzeDay()" class="text-[10px] uppercase tracking-wider bg-black/20 hover:bg-black/40 text-white/90 border border-white/20 px-3 py-1.5 rounded-lg font-bold transition-all active:scale-95">
+                        <i class="fas fa-sparkles mr-1"></i> Edge AI
+                    </button>
+                </div>
+                <p class="text-sm text-white/80 font-medium mb-1">Net PnL</p>
+                <h3 id="ui-pnl" class="text-3xl font-bold font-mono tracking-tight text-white">...</h3>
+            </div>
+
+        </div>
+
+        <!-- AI Summary Box -->
+        <div id="ai-summary-box" class="hidden mb-6 p-4 glass-card border-l-2 border-blue-500 rounded-r-3xl text-sm text-blue-100 leading-relaxed"></div>
+
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            
+            <div class="glass-card rounded-3xl p-6 lg:col-span-2 min-h-[400px] flex flex-col">
+                <div class="flex justify-between items-center mb-6">
+                    <h3 class="font-semibold text-gray-200">Equity Curve</h3>
+                </div>
+                <div class="flex-1 rounded-xl flex items-center justify-center w-full min-h-[300px] relative">
+                    <canvas id="mobileChart"></canvas>
+                </div>
+            </div>
+
+            <div class="glass-card rounded-3xl p-6 flex flex-col">
+                <h3 class="font-semibold text-gray-200 mb-6">Order Book</h3>
+                
+                <div id="trades-container" class="space-y-4 flex-1 overflow-y-auto custom-scroll pr-2">
+                    <div class="text-center text-gray-500 italic py-10">Awaiting data...</div>
+                </div>
+            </div>
+            
+        </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script>
+        // Sidebar Toggle Logic
+        function toggleSidebar() {
+            const sidebar = document.getElementById('sidebar');
+            sidebar.classList.toggle('sidebar-collapsed');
+        }
+
+        // Chart & Data Logic
+        let myChart = null;
+
+        function createGradient(ctx, isProfit) {
+            const gradient = ctx.createLinearGradient(0, 0, 0, 400);
+            if (isProfit) {
+                gradient.addColorStop(0, 'rgba(16, 185, 129, 0.4)');
+                gradient.addColorStop(1, 'rgba(16, 185, 129, 0.0)');
+            } else {
+                gradient.addColorStop(0, 'rgba(239, 68, 68, 0.4)');
+                gradient.addColorStop(1, 'rgba(239, 68, 68, 0.0)');
+            }
+            return gradient;
+        }
+
+        async function fetchLiveData() {
+            try {
+                const res = await fetch('/api/live-data');
+                const data = await res.json();
+                
+                const pnlEl = document.getElementById('ui-pnl');
+                const pnlCard = document.getElementById('pnl-card');
+                
+                const isProfit = data.dailyPnL >= 0;
+                pnlEl.innerText = (isProfit ? '+' : '') + '₹' + Math.abs(data.dailyPnL).toFixed(2);
+                
+                if (isProfit) {
+                    pnlCard.className = 'rounded-3xl p-6 relative overflow-hidden bg-gradient-to-br from-emerald-500/80 to-teal-600/80 border border-emerald-400/50 shadow-[0_0_30px_rgba(16,185,129,0.2)] transition-colors duration-500';
+                } else {
+                    pnlCard.className = 'rounded-3xl p-6 relative overflow-hidden bg-gradient-to-br from-red-500/80 to-rose-600/80 border border-red-400/50 shadow-[0_0_30px_rgba(239,68,68,0.2)] transition-colors duration-500';
+                }
+
+                document.getElementById('ui-winrate').innerText = data.winRate + '%';
+                document.getElementById('ui-trades').innerText = data.totalTrades;
+
+                const tradesContainer = document.getElementById('trades-container');
+                if (data.tableTrades.length === 0) {
+                    tradesContainer.innerHTML = '<div class="text-center text-gray-500 italic py-10">No trades executed today</div>';
+                } else {
+                    tradesContainer.innerHTML = data.tableTrades.map(t => {
+                        const tIsProfit = t.pnl >= 0;
+                        const bgDot = t.position_type === 'CE' ? 'bg-green-500' : 'bg-red-500';
+                        const pnlClass = tIsProfit ? 'text-green-400' : 'text-red-400';
+                        const sign = tIsProfit ? '+' : '';
+                        return `
+                        <div class="flex items-center justify-between p-3 rounded-xl hover:bg-white/5 transition-colors cursor-pointer border border-transparent hover:border-white/10 group">
+                            <div class="flex items-center gap-3">
+                                <div class="w-2 h-2 rounded-full ${bgDot}"></div>
+                                <div>
+                                    <p class="text-sm font-semibold">${t.position_type}</p>
+                                    <p class="text-xs text-gray-500 font-mono">${t.time.substring(0,8)}</p>
+                                </div>
+                            </div>
+                            <p class="font-mono text-sm group-hover:scale-105 transition-transform ${pnlClass}">${sign}₹${Math.abs(t.pnl).toFixed(2)}</p>
+                        </div>
+                        `;
+                    }).join('');
+                }
+
+                const ctx = document.getElementById('mobileChart').getContext('2d');
+                const lineColor = isProfit ? '#10b981' : '#ef4444';
+
+                if (!myChart) {
+                    Chart.defaults.color = '#94a3b8';
+                    Chart.defaults.font.family = 'Inter';
+                    myChart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: data.chartLabels,
+                            datasets: [{
+                                data: data.chartData,
+                                borderColor: lineColor,
+                                backgroundColor: createGradient(ctx, isProfit),
+                                borderWidth: 3, fill: true, tension: 0.4, pointRadius: 0,
+                                pointHitRadius: 10, pointHoverRadius: 6, pointHoverBackgroundColor: '#fff',
+                                pointHoverBorderColor: lineColor, pointHoverBorderWidth: 2
+                            }]
+                        },
+                        options: {
+                            responsive: true, maintainAspectRatio: false,
+                            interaction: { mode: 'index', intersect: false },
+                            plugins: { legend: { display: false } },
+                            scales: { 
+                                x: { grid: { display: false }, ticks: { maxTicksLimit: 6 } }, 
+                                y: { grid: { color: 'rgba(255,255,255,0.05)' }, border: { display: false } } 
+                            }
+                        }
+                    });
+                } else {
+                    myChart.data.labels = data.chartLabels;
+                    myChart.data.datasets[0].data = data.chartData;
+                    myChart.data.datasets[0].borderColor = lineColor;
+                    myChart.data.datasets[0].backgroundColor = createGradient(ctx, isProfit);
+                    myChart.update('none');
+                }
+
+                document.getElementById('sync-text').innerText = 'Edge Synced';
+                document.getElementById('sync-text').className = 'text-gray-300 font-medium';
+                document.getElementById('sync-dot').className = 'w-2 h-2 rounded-full bg-green-400 animate-pulse shadow-[0_0_8px_#4ade80]';
+
+            } catch (err) {
+                document.getElementById('sync-text').innerText = 'Reconnecting...';
+                document.getElementById('sync-text').className = 'text-yellow-400 font-medium';
+                document.getElementById('sync-dot').className = 'w-2 h-2 rounded-full bg-yellow-400 shadow-[0_0_8px_#facc15]';
+            }
+        }
+
+        async function killSwitch() {
+            if (confirm("🚨 WARNING: Market-sell open positions and halt the local engine. Proceed?")) {
+                const text = document.getElementById('kill-switch-text');
+                const orig = text.innerText;
+                text.innerText = 'Sending...';
+                try {
+                    await fetch('/api/panic', { method: 'POST' });
+                    text.innerText = 'Panic Sent!';
+                    setTimeout(() => text.innerText = orig, 3000);
+                } catch (e) {
+                    text.innerText = 'Failed';
+                    setTimeout(() => text.innerText = orig, 3000);
+                }
+            }
+        }
+
+        async function analyzeDay() {
+            const box = document.getElementById('ai-summary-box');
+            box.classList.remove('hidden');
+            box.innerHTML = '<i class="fas fa-circle-notch fa-spin mr-2"></i> Analyzing microstructure...';
+            try {
+                const res = await fetch('/api/analyze');
+                const data = await res.json();
+                box.innerHTML = '<span class="font-semibold block mb-1"><i class="fas fa-sparkles mr-2"></i>Edge AI Analyst:</span>' + data.summary;
+            } catch (e) {
+                box.innerHTML = 'Analysis unavailable.';
+            }
+        }
+
+        fetchLiveData();
+        setInterval(fetchLiveData, 5000);
+    </script>
+</body>
+</html>

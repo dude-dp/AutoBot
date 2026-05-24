@@ -1,0 +1,1 @@
+{"python.defaultInterpreterPath": "./env/bin/python", "python.analysis.extraPaths": ["./env/lib/python3.13/site-packages"]}
