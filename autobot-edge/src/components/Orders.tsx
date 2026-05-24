@@ -16,7 +16,7 @@ export const Orders: FC<{ trades: Trade[] }> = ({ trades }) => {
   return (
     <div class="flex flex-col h-full animate-fade-in">
       <TopBar title="Execution History" />
-      
+
       <div class="glass-card rounded-3xl p-6 flex-1 flex flex-col min-h-0">
         <div class="flex justify-between items-center mb-6">
           <h3 class="font-semibold text-gray-200">Last 100 Trades</h3>
@@ -44,7 +44,7 @@ export const Orders: FC<{ trades: Trade[] }> = ({ trades }) => {
                   const isProfit = t.pnl >= 0;
                   const typeColor = t.position_type === 'CE' ? 'text-green-400 bg-green-400/10 border-green-400/20' : 'text-red-400 bg-red-400/10 border-red-400/20';
                   const pnlColor = isProfit ? 'text-green-400 glow-green' : 'text-red-400 glow-red';
-                  
+
                   return (
                     <tr class="hover:bg-white/5 transition-colors group">
                       <td class="py-3 text-gray-400 font-mono whitespace-nowrap">
