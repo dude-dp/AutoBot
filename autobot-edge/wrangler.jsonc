@@ -1,7 +1,7 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "autobot-edge",
-  "pages_build_output_dir": "public",
+  "main": "src/index.tsx",
   "compatibility_date": "2026-05-23",
   "vars": {
     "SUPABASE_URL": "https://nicqvlhykzqssrhejysp.supabase.co",
