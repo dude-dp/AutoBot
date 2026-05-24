@@ -22,9 +22,21 @@ const app = new Hono<{ Bindings: Bindings }>()
 
 // 1. Edge Security Middleware
 app.use('*', async (c, next) => {
+  const url = new URL(c.req.url)
+  // Exclude static assets and the Telegram webhook from basic auth
+  if (
+    url.pathname === '/sw.js' || 
+    url.pathname === '/manifest.json' || 
+    url.pathname.startsWith('/static/') ||
+    url.pathname === '/favicon.ico' ||
+    url.pathname === '/api/telegram-webhook'
+  ) {
+    return next()
+  }
   const auth = basicAuth({ username: c.env.ADMIN_USER, password: c.env.ADMIN_PASS })
   return auth(c, next)
 })
+
 
 // Dashboard Route
 app.get('/', async (c) => {
@@ -232,6 +244,41 @@ app.post('/api/panic', async (c) => {
   return c.json({ status: 'success' })
 })
 
+// ==========================================
+// 🏷️ AUTOMATED EDGE AI TAGGING
+// ==========================================
+app.post('/api/tag-trade', async (c) => {
+  const { id } = await c.req.json()
+  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
+  
+  // 1. Fetch the exact trade details
+  const { data: trade } = await supabase.from('trade_log').select('*').eq('id', id).single()
+  if (!trade) return c.json({ error: 'Trade not found' }, 404)
+
+  // 2. Strict, quantitative prompt for Llama 3
+  const prompt = `You are a high-frequency trading algorithm. Categorize this options scalp execution into exactly ONE of these tags based on the PnL and context: [BREAKOUT, REVERSION, CHOP, STOP_HUNT]. 
+  Trade Details: Type: ${trade.position_type}, Entry: ₹${trade.buy_price}, Exit: ₹${trade.sell_price}, PnL: ₹${trade.pnl}.
+  Respond ONLY with the single exact tag word. No punctuation or explanation.`
+
+  try {
+    const aiResponse = await c.env.AI.run('@cf/meta/llama-3-8b-instruct', {
+      messages: [{ role: 'user', content: prompt }]
+    })
+    
+    // 3. Clean the response and enforce the categories
+    let tag = aiResponse.response.trim().toUpperCase().replace(/[^A-Z_]/g, '')
+    const validTags = ['BREAKOUT', 'REVERSION', 'CHOP', 'STOP_HUNT']
+    if (!validTags.includes(tag)) tag = 'CHOP' // Default fallback
+
+    // 4. Update the database (This will trigger a WebSocket UPDATE payload!)
+    await supabase.from('trade_log').update({ ai_tag: tag }).eq('id', id)
+    
+    return c.json({ status: 'success', tag })
+  } catch (err) {
+    return c.json({ error: 'AI generation failed' }, 500)
+  }
+})
+
 app.get('/api/live-data', async (c) => {
   c.header('Cache-Control', 'public, max-age=5')
   const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
@@ -291,6 +338,73 @@ app.get('/api/trigger-eod', async (c) => {
     })
 
     return c.json({ status: 'EOD report sent to Telegram.' })
+})
+
+// ==========================================
+// 📱 TELEGRAM HEADLESS COMMAND CENTER
+// ==========================================
+app.post('/api/telegram-webhook', async (c) => {
+  const update = await c.req.json()
+  
+  // Ignore anything that isn't a direct text message
+  if (!update.message || !update.message.text) return c.json({ status: 'ignored' })
+  
+  const chatId = update.message.chat.id.toString()
+  const text = update.message.text.toLowerCase()
+
+  // 🛡️ Security Check: Only process commands from your personal Chat ID
+  if (chatId !== c.env.TELEGRAM_CHAT_ID) {
+      console.warn(`Unauthorized access attempt from Chat ID: ${chatId}`)
+      return c.json({ status: 'unauthorized' }, 403)
+  }
+
+  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
+
+  // Helper function to send replies back to Telegram
+  const reply = async (msg: string) => {
+    await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: 'Markdown' })
+    })
+  }
+
+  try {
+    if (text.startsWith('/panic') || text.startsWith('/halt')) {
+      await supabase.from('bot_control').update({ command: 'PANIC', status: 'HALTED', updated_at: new Date().toISOString() }).eq('id', 1)
+      await reply("🚨 *SYSTEM HALTED*\n\nAutonomous circuit breakers manually tripped via Telegram. Python engine instructed to market-sell all live positions.")
+    
+    } else if (text.startsWith('/resume')) {
+      await supabase.from('bot_control').update({ status: 'ACTIVE', updated_at: new Date().toISOString() }).eq('id', 1)
+      await reply("✅ *SYSTEM ARMED*\n\nCircuit breakers reset. Engine is scanning the microstructure.")
+
+    } else if (text.startsWith('/status')) {
+      const today = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Kolkata"})).toISOString().split('T')[0]
+      const { data: trades } = await supabase.from('trade_log').select('*').eq('trade_date', today)
+      const { data: control } = await supabase.from('bot_control').select('*').eq('id', 1).single()
+
+      const totalPnL = trades?.reduce((sum, t) => sum + (t.pnl || 0), 0) || 0
+      const wins = trades?.filter(t => t.pnl > 0).length || 0
+      const total = trades?.length || 0
+      const wr = total > 0 ? Math.round((wins / total) * 100) : 0
+
+      const msg = `📊 *Edge Terminal Snapshot*\n\n` +
+                  `⚙️ State: *${control?.status}*\n` +
+                  `💰 Net PnL: *₹${totalPnL.toFixed(2)}*\n` +
+                  `🎯 Win Rate: *${wr}%* (${wins}/${total})\n\n` +
+                  `🛡️ Risk Limit: ₹${control?.max_drawdown}\n` +
+                  `🛡️ Loss Limit: ${control?.max_consecutive_losses} consecutive`
+      await reply(msg)
+
+    } else {
+      await reply("🤖 *AutoBot Edge Commands:*\n`/status` - Live PnL & Risk Check\n`/halt` - Emergency Kill Switch\n`/resume` - Re-arm System")
+    }
+  } catch (err) {
+    console.error("Telegram Webhook Error:", err)
+  }
+
+  // Always return 200 to Telegram so it doesn't retry the payload
+  return c.json({ status: 'success' })
 })
 
 export default app

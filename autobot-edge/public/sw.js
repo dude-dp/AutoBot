@@ -31,6 +31,11 @@ self.addEventListener('activate', (event) => {
 
 // Fetch Event - Network First, fallback to cache
 self.addEventListener('fetch', (event) => {
+  // Skip intercepting page navigations to allow browser native basic auth handling
+  if (event.request.mode === 'navigate') {
+    return;
+  }
+
   // We don't want to cache API routes (Supabase live data)
   if (event.request.url.includes('/api/')) return;
 
@@ -40,3 +45,4 @@ self.addEventListener('fetch', (event) => {
     })
   );
 });
+

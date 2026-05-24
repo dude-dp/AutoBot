@@ -4,8 +4,8 @@
   "description": "Institutional Options Scalping Terminal",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#1a1020",
-  "theme_color": "#1a1020",
+  "background_color": "#0c0a14",
+  "theme_color": "#0c0a14",
   "orientation": "portrait",
   "icons": [
     {

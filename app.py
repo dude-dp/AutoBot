@@ -239,6 +239,23 @@ def load_todays_stats():
     except Exception as e:
         logging.error(f"Failed to load today's stats from Supabase: {e}")
 
+def trigger_edge_ai_tagger(trade_id):
+    def run():
+        try:
+            worker_url = os.getenv("WORKER_URL", "https://autobot-edge.upstox-autobot.workers.dev")
+            auth_creds = (os.getenv("ADMIN_USER", "admin"), os.getenv("ADMIN_PASS", "supersecret"))
+            res = requests.post(
+                f"{worker_url}/api/tag-trade",
+                json={"id": trade_id},
+                auth=auth_creds,
+                timeout=10
+            )
+            logging.info(f"AI Tagger requested for trade {trade_id}. Response: {res.status_code}")
+        except Exception as e:
+            logging.error(f"Background AI Tagger failed: {e}")
+            
+    threading.Thread(target=run, daemon=True).start()
+
 def log_trade(position_type, buy_price, sell_price, quantity):
     pnl = round((sell_price - buy_price) * quantity, 2)
     today = date.today().isoformat()
@@ -247,7 +264,7 @@ def log_trade(position_type, buy_price, sell_price, quantity):
     # Push the trade directly to the cloud
     if supabase:
         try:
-            supabase.table('trade_log').insert({
+            res = supabase.table('trade_log').insert({
                 "trade_date": today,
                 "time": now_time,
                 "position_type": position_type,
@@ -255,6 +272,9 @@ def log_trade(position_type, buy_price, sell_price, quantity):
                 "sell_price": sell_price,
                 "pnl": pnl
             }).execute()
+            if res.data and len(res.data) > 0:
+                trade_id = res.data[0]['id']
+                trigger_edge_ai_tagger(trade_id)
         except Exception as e:
             logging.error(f"Failed to sync trade to Supabase: {e}")
 
@@ -430,6 +450,23 @@ def fire_limit_order_async(instrument_token, transaction_type, limit_price):
     state["pending_order"] = True
     threading.Thread(target=place_and_monitor_limit_order, args=(instrument_token, transaction_type, limit_price)).start()
 
+def get_breakeven_points(buy_price, quantity):
+    """Calculates the exact points movement required to cover Upstox Brokerage + Taxes"""
+    if quantity == 0: return 0.0
+    
+    # Approximate round-trip turnover
+    turnover = (buy_price * 2) * quantity  
+    
+    brokerage = 40.0  # ₹20 Buy + ₹20 Sell
+    txn_charge = turnover * 0.0005        # ~0.05% NSE Options Txn Charge
+    gst = (brokerage + txn_charge) * 0.18 # 18% GST on Brokerage + Txn
+    stt = (buy_price * quantity) * 0.001  # STT 0.1% on Sell Side Premium
+    stamp_duty = (buy_price * quantity) * 0.00003 # Stamp duty on Buy Side
+    sebi = turnover * 0.000001            # SEBI Turnover charge
+    
+    total_charges = brokerage + txn_charge + gst + stt + stamp_duty + sebi
+    return round(total_charges / quantity, 2)
+
 def on_message(message):
     now = datetime.now()
     feeds = message.get("feeds", {})
@@ -498,7 +535,7 @@ def on_message(message):
                 logging.info(f"PE Spread too wide (₹{pe_spread:.1f}). Skipping entry.")
 
     # ==========================================
-    # EXIT LOGIC (Trailing Stop Loss)
+    # EXIT LOGIC (Dynamic 1% Trailing & Break-Even)
     # ==========================================
     else:
         current_premium = state["ce_ltp"] if state["position_type"] == "CE" else state["pe_ltp"]
@@ -513,22 +550,34 @@ def on_message(message):
             exit_signal, exit_reason = True, "Reversal"
         elif state["position_type"] == "PE" and state["nifty_ltp"] <= state["candle_open_price"]:
             exit_signal, exit_reason = True, "Reversal"
+        elif state["entry_time"] and (now - datetime.fromisoformat(state["entry_time"])).total_seconds() > 900:
+            exit_signal, exit_reason = True, "Time Stop (15m elapsed)"
         else:
-            if state["highest_unrealized_pnl"] >= 2.5: # Trail deep profits
-                if pnl_pts <= state["highest_unrealized_pnl"] - 1.0:
-                    exit_signal, exit_reason = True, "Trailing SL"
-            elif state["highest_unrealized_pnl"] >= TARGET_POINTS: # Risk Free Trade
-                if pnl_pts <= 0.5:
-                    exit_signal, exit_reason = True, "Risk-Free SL"
-            else: # Hard Stop Loss
+            # 1. Calculate Exact Break-Even Points for this specific lot size
+            breakeven_pts = get_breakeven_points(state["buy_price"], state["quantity"])
+            
+            # 2. Define 1% Target of the capital deployed on this premium
+            one_percent_pts = state["buy_price"] * 0.01
+            
+            # 3. Secure Target: Must be 1% OR Break-even + buffer (whichever is higher)
+            target_pts = max(one_percent_pts, breakeven_pts + 0.25)
+            
+            # 4. Step-Trailing Gap
+            trail_gap = 0.20
+            
+            if state["highest_unrealized_pnl"] >= target_pts:
+                # Trail exactly 0.20 pts behind the highest achieved point
+                trailing_sl = state["highest_unrealized_pnl"] - trail_gap
+                
+                # Absolute Floor: Guarantee a risk-free exit (scratch trade) if it drops rapidly from target
+                trailing_sl = max(trailing_sl, breakeven_pts + 0.05)
+                
+                if pnl_pts <= trailing_sl:
+                    exit_signal, exit_reason = True, f"Dynamic 1% Trail Hit (+{pnl_pts:.2f} pts)"
+            else:
+                # Pre-Target: Standard Hard Stop Loss
                 if pnl_pts <= -STOP_LOSS_POINTS:
                     exit_signal, exit_reason = True, "Hard SL"
-
-        # CONDITION 3: The Time Stop (Theta Protection)
-        if state["entry_time"]:
-            entry_dt = datetime.fromisoformat(state["entry_time"])
-            if (now - entry_dt).total_seconds() > 900: # 900 seconds = 15 minutes
-                exit_signal, exit_reason = True, "Time Stop (Momentum Died)"
 
         if exit_signal:
             state["last_traded_candle"] = state["current_candle_minute"]
