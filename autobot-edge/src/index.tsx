@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { basicAuth } from 'hono/basic-auth'
+import { getCookie, setCookie } from 'hono/cookie'
 import { createClient } from '@supabase/supabase-js'
 import { Layout } from './components/Layout'
 import { TopBar } from './components/TopBar'
@@ -35,6 +36,24 @@ app.use('*', async (c, next) => {
   ) {
     return next()
   }
+
+  // Intercept the Telegram Mini App URL Token and set a session cookie
+  const urlToken = c.req.query('tg_token')
+  if (urlToken === c.env.ADMIN_PASS) {
+    setCookie(c, 'auth_session', c.env.ADMIN_PASS, { 
+      path: '/', 
+      secure: true, 
+      httpOnly: true, 
+      sameSite: 'None' 
+    })
+    return next()
+  }
+
+  // Allow access if they are navigating tabs inside the Mini App
+  if (getCookie(c, 'auth_session') === c.env.ADMIN_PASS) {
+    return next()
+  }
+
   const auth = basicAuth({ username: c.env.ADMIN_USER, password: c.env.ADMIN_PASS })
   return auth(c, next)
 })
@@ -348,11 +367,21 @@ app.get('/api/trigger-eod', async (c) => {
 app.post('/api/telegram-webhook', async (c) => {
   const update = await c.req.json()
   
-  // Ignore anything that isn't a direct text message
-  if (!update.message || !update.message.text) return c.json({ status: 'ignored' })
+  // Ignore anything that isn't a direct text message or a callback query
+  if (!update.callback_query && (!update.message || !update.message.text)) {
+    return c.json({ status: 'ignored' })
+  }
   
-  const chatId = update.message.chat.id.toString()
-  const text = update.message.text.toLowerCase()
+  let chatId = ""
+  let text = ""
+  
+  if (update.message && update.message.text) {
+      chatId = update.message.chat.id.toString()
+      text = update.message.text.toLowerCase()
+  } else if (update.callback_query) {
+      chatId = update.callback_query.message.chat.id.toString()
+      text = update.callback_query.data.toLowerCase()
+  }
 
   // 🛡️ Security Check: Only process commands from your personal Chat ID
   if (chatId !== c.env.TELEGRAM_CHAT_ID) {
@@ -369,6 +398,17 @@ app.post('/api/telegram-webhook', async (c) => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ chat_id: chatId, text: msg, parse_mode: 'Markdown' })
     })
+  }
+
+  // Acknowledge Telegram callback query if present to stop loading animation
+  if (update.callback_query) {
+    try {
+      await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_TOKEN}/answerCallbackQuery`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ callback_query_id: update.callback_query.id })
+      })
+    } catch (e) {}
   }
 
   try {
@@ -397,6 +437,24 @@ app.post('/api/telegram-webhook', async (c) => {
                   `🛡️ Risk Limit: ₹${control?.max_drawdown}\n` +
                   `🛡️ Loss Limit: ${control?.max_consecutive_losses} consecutive`
       await reply(msg)
+
+    } else if (text.startsWith('/start') || text.startsWith('/menu')) {
+      const workerUrl = new URL(c.req.url).origin + `/?tg_token=${c.env.ADMIN_PASS}`
+      await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_TOKEN}/sendMessage`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          chat_id: chatId, 
+          text: "⚡ *AutoBot Edge Systems Armed*\n\nSelect an option below to manage the terminal.", 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: "📱 Open Live Terminal", web_app: { url: workerUrl } }],
+              [{ text: "📊 Quick Status", callback_data: "/status" }, { text: "🛑 KILL SWITCH", callback_data: "/panic" }]
+            ]
+          }
+        })
+      })
 
     } else {
       await reply("🤖 *AutoBot Edge Commands:*\n`/status` - Live PnL & Risk Check\n`/halt` - Emergency Kill Switch\n`/resume` - Re-arm System")

@@ -307,7 +307,11 @@ def fetch_available_capital():
         user_api = upstox_client.UserApi(api_client)
         resp = user_api.get_user_fund_margin(segment='SEC', api_version='2.0')
         # Upstox V2 object structure for funds
-        available = resp.data.equity.available_margin
+        if isinstance(resp.data, dict):
+            equity_data = resp.data.get('equity')
+            available = equity_data.available_margin if equity_data else 0
+        else:
+            available = resp.data.equity.available_margin
         state["available_capital"] = float(available)
         return float(available)
     except Exception as e:

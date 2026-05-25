@@ -19,6 +19,7 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
         <script src="https://unpkg.com/htmx.org@1.9.10"></script>
         <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
         <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" rel="stylesheet" />
+        <script src="https://telegram.org/js/telegram-web-app.js"></script>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin="" />
         <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
@@ -328,6 +329,15 @@ export const Layout: FC<{ title: string; currentPath: string; children: any }> =
                 console.error('ServiceWorker registration failed:', error);
               });
             });
+          }
+
+          // Initialize the Telegram Mini App Bridge
+          if (window.Telegram && window.Telegram.WebApp) {
+              const tg = window.Telegram.WebApp;
+              tg.expand();
+              tg.ready();
+              tg.setHeaderColor('#1a1020');
+              tg.setBackgroundColor('#1a1020');
           }
           `
         }} />
