@@ -76,6 +76,18 @@ async function fetchInitialData() {
         }
 
         updateTopMetrics();
+        
+        // Initial Capital extraction from macroTrend
+        if (data.macroTrend && data.macroTrend.includes('|')) {
+            const parts = data.macroTrend.split('|');
+            const cap = parts[1];
+            const capEl = document.getElementById('ui-capital');
+            if (capEl && cap) capEl.innerText = '₹' + parseFloat(cap).toLocaleString('en-IN');
+        } else {
+            const capEl = document.getElementById('ui-capital');
+            if (capEl) capEl.innerText = '₹40,000';
+        }
+
         renderChart(data.chartLabels, data.chartData);
         renderTable(data.tableTrades);
         initGauges();
@@ -293,11 +305,21 @@ function handleLiveTelemetry(data) {
     }
 
     const badge = document.getElementById('macro-trend-badge');
-    if (badge && data.macro_trend) {
-        badge.innerText = data.macro_trend;
-        if (data.macro_trend === 'BULLISH') {
+    let trendStr = data.macro_trend;
+    let cap = null;
+    if (trendStr && trendStr.includes('|')) {
+        const parts = trendStr.split('|');
+        trendStr = parts[0];
+        cap = parts[1];
+        const capEl = document.getElementById('ui-capital');
+        if (capEl && cap) capEl.innerText = '₹' + parseFloat(cap).toLocaleString('en-IN');
+    }
+
+    if (badge && trendStr) {
+        badge.innerText = trendStr;
+        if (trendStr === 'BULLISH') {
             badge.className = 'px-2 py-0.5 rounded bg-green-500/20 text-[9px] font-bold tracking-wider text-green-400 border border-green-500/30';
-        } else if (data.macro_trend === 'BEARISH') {
+        } else if (trendStr === 'BEARISH') {
             badge.className = 'px-2 py-0.5 rounded bg-red-500/20 text-[9px] font-bold tracking-wider text-red-400 border border-red-500/30';
         } else {
             badge.className = 'px-2 py-0.5 rounded bg-white/5 text-[9px] font-bold tracking-wider text-gray-400 border border-white/[0.04]';
@@ -414,9 +436,6 @@ function handleLiveExecution(trade) {
 
 // Update Top Metrics UI
 function updateTopMetrics() {
-    const capitalEl = document.getElementById('ui-capital');
-    if (capitalEl) capitalEl.innerText = '₹40,000';
-
     const pnlEl = document.getElementById('ui-pnl');
     const pnlCard = document.getElementById('pnl-card');
     const isProfit = state.dailyPnL >= 0;

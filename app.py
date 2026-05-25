@@ -303,20 +303,61 @@ def log_trade(position_type, buy_price, sell_price, quantity):
 # ==========================================
 def fetch_available_capital():
     """Queries Upstox for live margin available for trading."""
+    if api_client is None: return state["available_capital"]
     try:
         user_api = upstox_client.UserApi(api_client)
         resp = user_api.get_user_fund_margin(segment='SEC', api_version='2.0')
-        # Upstox V2 object structure for funds
-        if isinstance(resp.data, dict):
-            equity_data = resp.data.get('equity')
-            available = equity_data.available_margin if equity_data else 0
+        
+        data = getattr(resp, 'data', resp)
+        if data is None:
+            logging.error("Failed to fetch live capital: resp.data is None")
+            return state["available_capital"]
+            
+        equity_data = None
+        if isinstance(data, dict):
+            equity_data = data.get('equity')
+        elif hasattr(data, 'equity'):
+            equity_data = getattr(data, 'equity')
+        elif hasattr(data, 'get') and callable(getattr(data, 'get')):
+            try:
+                equity_data = data.get('equity')
+            except Exception:
+                pass
+                
+        if equity_data is None:
+            equity_data = data
+            
+        available = None
+        if isinstance(equity_data, dict):
+            available = equity_data.get('available_margin')
+        elif hasattr(equity_data, 'available_margin'):
+            available = getattr(equity_data, 'available_margin')
+        elif hasattr(equity_data, 'get') and callable(getattr(equity_data, 'get')):
+            try:
+                available = equity_data.get('available_margin')
+            except Exception:
+                pass
+                
+        if available is not None:
+            state["available_capital"] = float(available)
+            # Update telemetry table immediately so dashboard capital updates in real-time
+            if supabase:
+                try:
+                    trend = state.get("macro_trend", "SCANNING")
+                    supabase.table('telemetry').update({
+                        "macro_trend": f"{trend}|{available}",
+                        "updated_at": datetime.now().isoformat()
+                    }).eq('id', 1).execute()
+                except Exception as db_err:
+                    logging.error(f"Failed to push capital to telemetry DB: {db_err}")
+            return float(available)
         else:
-            available = resp.data.equity.available_margin
-        state["available_capital"] = float(available)
-        return float(available)
+            logging.error(f"Failed to fetch live capital: available_margin not found in {equity_data}")
+            return state["available_capital"]
     except Exception as e:
         logging.error(f"Failed to fetch live capital: {e}")
         return state["available_capital"] # fallback to previous/env
+
 
 def calculate_dynamic_quantity(premium):
     """Calculates max lots based on live capital and usage config."""
@@ -339,9 +380,18 @@ def get_dynamic_tokens():
     spot_price = 0.0
 
     try:
-        response = quote_api.get_market_quote_ohlc(NIFTY_SPOT_TOKEN, "1D", api_version='2.0')
-        spot_price = response.data[NIFTY_SPOT_TOKEN].ohlc.close
-        state["day_open_price"] = response.data[NIFTY_SPOT_TOKEN].ohlc.open
+        response = quote_api.get_market_quote_ohlc(NIFTY_SPOT_TOKEN, "1d", api_version='2.0')
+        nifty_key = NIFTY_SPOT_TOKEN.replace("|", ":")
+        
+        # Handle both dict and object structures from Upstox SDK
+        resp_data = getattr(response, 'data', response) if not isinstance(response, dict) else response.get('data', {})
+        nifty_data = resp_data.get(nifty_key, {}) if isinstance(resp_data, dict) else getattr(resp_data, nifty_key, None)
+        
+        ohlc_data = nifty_data.get('ohlc', {}) if isinstance(nifty_data, dict) else getattr(nifty_data, 'ohlc', None)
+        
+        spot_price = ohlc_data.get('close', 23700.0) if isinstance(ohlc_data, dict) else getattr(ohlc_data, 'close', 23700.0)
+        state["day_open_price"] = ohlc_data.get('open', 23700.0) if isinstance(ohlc_data, dict) else getattr(ohlc_data, 'open', 23700.0)
+        
         add_activity(f"Day Open Locked: {state['day_open_price']}", "info")
     except Exception:
         spot_price = 23700.0
@@ -356,14 +406,14 @@ def get_dynamic_tokens():
 
     csv_url = "https://assets.upstox.com/market-quote/instruments/exchange/complete.csv.gz"
     df = pd.read_csv(csv_url)
-    nifty_options = df[(df['name'] == 'NIFTY') & (df['instrument_type'].isin(['CE', 'PE']))].copy()
+    nifty_options = df[(df['name'] == 'NIFTY') & (df['option_type'].isin(['CE', 'PE']))].copy()
     nifty_options['expiry'] = pd.to_datetime(nifty_options['expiry'])
     nearest_expiry = nifty_options[nifty_options['expiry'] >= pd.to_datetime(date.today())]['expiry'].min()
 
     try:
         options_chain = nifty_options[nifty_options['expiry'] == nearest_expiry]
-        ce = options_chain[(options_chain['strike'] == ce_strike) & (options_chain['instrument_type'] == 'CE')].iloc[0]['instrument_key']
-        pe = options_chain[(options_chain['strike'] == pe_strike) & (options_chain['instrument_type'] == 'PE')].iloc[0]['instrument_key']
+        ce = options_chain[(options_chain['strike'] == ce_strike) & (options_chain['option_type'] == 'CE')].iloc[0]['instrument_key']
+        pe = options_chain[(options_chain['strike'] == pe_strike) & (options_chain['option_type'] == 'PE')].iloc[0]['instrument_key']
         return ce, pe
     except IndexError:
         add_activity("Could not find ITM contracts in CSV!", "error")
@@ -479,19 +529,28 @@ def on_message(message):
     feeds = message.get("feeds", {})
     
     if NIFTY_SPOT_TOKEN in feeds:
-        try: state["nifty_ltp"] = feeds[NIFTY_SPOT_TOKEN]["ff"]["marketFF"]["ltpc"]["ltp"]
+        try: state["nifty_ltp"] = feeds[NIFTY_SPOT_TOKEN]["fullFeed"]["indexFF"]["ltpc"]["ltp"]
         except: pass
     if CE_TOKEN in feeds:
-        try: state["ce_ltp"] = feeds[CE_TOKEN]["ff"]["marketFF"]["ltpc"]["ltp"]
+        try: state["ce_ltp"] = feeds[CE_TOKEN]["fullFeed"]["marketFF"]["ltpc"]["ltp"]
         except: pass
     if PE_TOKEN in feeds:
-        try: state["pe_ltp"] = feeds[PE_TOKEN]["ff"]["marketFF"]["ltpc"]["ltp"]
+        try: state["pe_ltp"] = feeds[PE_TOKEN]["fullFeed"]["marketFF"]["ltpc"]["ltp"]
         except: pass
 
     if state["nifty_ltp"] == 0.0 or not state["bot_active"]: return
 
     # Tilt Breaker Check
-    if state["timeout_until"]: return
+    if state["timeout_until"]:
+        try:
+            dt = datetime.fromisoformat(state["timeout_until"])
+            if now >= dt:
+                state["timeout_until"] = None
+                add_activity("Timeout expired. Resuming microstructure scanning.", "info")
+            else:
+                return
+        except:
+            return
 
     current_5min_block = now.minute // 5
     if current_5min_block != state["current_candle_minute"]:
@@ -503,16 +562,19 @@ def on_message(message):
     pe_bids, pe_asks, pe_spread = 0, 0, 0.0
     
     try:
-        if CE_TOKEN in feeds and "bidAskQuote" in feeds[CE_TOKEN]["ff"]["marketFF"]["marketLevel"]:
-            depth = feeds[CE_TOKEN]["ff"]["marketFF"]["marketLevel"]["bidAskQuote"]
-            ce_bids, ce_asks = sum(l['bq'] for l in depth), sum(l['aq'] for l in depth)
-            if depth[0]['aq'] > 0: ce_spread = depth[0]['ap'] - depth[0]['bp']
+        if CE_TOKEN in feeds and "marketLevel" in feeds[CE_TOKEN].get("fullFeed", {}).get("marketFF", {}):
+            depth = feeds[CE_TOKEN]["fullFeed"]["marketFF"]["marketLevel"].get("bidAskQuote", [])
+            if depth:
+                ce_bids, ce_asks = sum(int(l['bidQ']) for l in depth), sum(int(l['askQ']) for l in depth)
+                if int(depth[0]['askQ']) > 0: ce_spread = depth[0]['askP'] - depth[0]['bidP']
             
-        if PE_TOKEN in feeds and "bidAskQuote" in feeds[PE_TOKEN]["ff"]["marketFF"]["marketLevel"]:
-            depth = feeds[PE_TOKEN]["ff"]["marketFF"]["marketLevel"]["bidAskQuote"]
-            pe_bids, pe_asks = sum(l['bq'] for l in depth), sum(l['aq'] for l in depth)
-            if depth[0]['aq'] > 0: pe_spread = depth[0]['ap'] - depth[0]['bp']
-    except: pass
+        if PE_TOKEN in feeds and "marketLevel" in feeds[PE_TOKEN].get("fullFeed", {}).get("marketFF", {}):
+            depth = feeds[PE_TOKEN]["fullFeed"]["marketFF"]["marketLevel"].get("bidAskQuote", [])
+            if depth:
+                pe_bids, pe_asks = sum(int(l['bidQ']) for l in depth), sum(int(l['askQ']) for l in depth)
+                if int(depth[0]['askQ']) > 0: pe_spread = depth[0]['askP'] - depth[0]['bidP']
+    except Exception as e: 
+        logging.error(f"Depth parsing error: {e}")
 
     # ==========================================
     # 📡 THE TELEMETRY HEARTBEAT
@@ -526,7 +588,7 @@ def on_message(message):
                 supabase.table('telemetry').update({
                     "ce_bids": ce_b, "ce_asks": ce_a, "ce_spread": ce_s,
                     "pe_bids": pe_b, "pe_asks": pe_a, "pe_spread": pe_s,
-                    "macro_trend": trend,
+                    "macro_trend": f"{trend}|{state.get('available_capital', 0)}",
                     "updated_at": datetime.now().isoformat()
                 }).eq('id', 1).execute()
             except Exception: pass
@@ -544,6 +606,10 @@ def on_message(message):
     # ENTRY LOGIC (Macro Trend + OBI + Auto Qty)
     # ==========================================
     if not state["in_position"]:
+        # Only allow entries within the first minute of the 5-minute candle (e.g. 10:00:00 - 10:00:59)
+        if now.minute % 5 != 0:
+            return
+
         state["highest_unrealized_pnl"] = 0.0 
         
         # BUY CE (Bullish Macro Trend + Price crosses below open + Bullish Order Book)
@@ -707,6 +773,41 @@ def poll_supabase_commands():
             
         time.sleep(2) # Poll every 2 seconds
 
+def monitor_capital_and_risk():
+    """Background thread that periodically checks live capital and handles insufficient funds."""
+    logging.info("💰 Capital Monitoring Thread Activated.")
+    while True:
+        try:
+            # 1. Fetch live capital
+            cap = fetch_available_capital()
+            
+            # 2. Determine minimum required capital
+            ce_ltp = state.get("ce_ltp", 0.0)
+            pe_ltp = state.get("pe_ltp", 0.0)
+            
+            premiums = [p for p in [ce_ltp, pe_ltp] if p > 0.0]
+            min_premium = min(premiums) if premiums else 30.0
+            
+            qty = state.get("quantity", 25)
+            required_capital = qty * min_premium
+            
+            if cap < required_capital:
+                timeout_minutes = 5
+                timeout = datetime.now() + timedelta(minutes=timeout_minutes)
+                state["timeout_until"] = timeout.isoformat()
+                
+                msg = f"⚠️ Insufficient Capital: ₹{cap:.2f} (Required: ~₹{required_capital:.2f} for {qty} qty). System sleeping for {timeout_minutes}m."
+                add_activity(msg, "error")
+                send_telegram_alert(msg)
+                
+                time.sleep(timeout_minutes * 60)
+                continue
+                
+        except Exception as e:
+            logging.error(f"Error in capital monitoring thread: {e}")
+            
+        time.sleep(15)
+
 # ==========================================
 # 6. SERVER STARTUP & LOGGING
 # ==========================================
@@ -733,6 +834,9 @@ if __name__ == "__main__":
 
     # Start the cloud polling thread
     threading.Thread(target=poll_supabase_commands, daemon=True).start()
+
+    # Start the capital monitoring thread
+    threading.Thread(target=monitor_capital_and_risk, daemon=True).start()
 
     logging.info("Starting Control Center UI at http://localhost:8000")
     uvicorn.run(app, host="0.0.0.0", port=8000)

@@ -305,6 +305,10 @@ app.get('/api/live-data', async (c) => {
   const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
   const today = new Date().toISOString().split('T')[0]
   const { data: trades } = await supabase.from('trade_log').select('*').eq('trade_date', today).order('id', { ascending: true })
+  
+  // Fetch latest telemetry for macro_trend and capital
+  const { data: telemetry } = await supabase.from('telemetry').select('macro_trend').eq('id', 1).single()
+  const macroTrend = telemetry?.macro_trend || 'SCANNING'
 
   const totalTrades = trades?.length || 0
   const wins = trades?.filter(t => t.pnl > 0).length || 0
@@ -319,7 +323,7 @@ app.get('/api/live-data', async (c) => {
   }) || [];
 
   const tableTrades = trades ? [...trades].reverse() : [];
-  return c.json({ dailyPnL: dailyPnL.toFixed(2), winRate, totalTrades, chartLabels, chartData, tableTrades })
+  return c.json({ dailyPnL: dailyPnL.toFixed(2), winRate, totalTrades, chartLabels, chartData, tableTrades, macroTrend })
 })
 
 export async function generateDailySummary(env: Bindings, trades: any[]) {
