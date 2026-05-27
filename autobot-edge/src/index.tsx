@@ -1,401 +1,167 @@
 import { Hono } from 'hono'
-import { basicAuth } from 'hono/basic-auth'
-import { getCookie, setCookie } from 'hono/cookie'
 import { createClient } from '@supabase/supabase-js'
-import { Layout } from './components/Layout'
-import { TopBar } from './components/TopBar'
-import { Orders } from './components/Orders'
-import { Statistics } from './components/Statistics'
-import { Dashboard } from './components/Dashboard'
-import { Simulations } from './components/Simulations'
 
 type Bindings = {
   SUPABASE_URL: string
   SUPABASE_KEY: string
-  ADMIN_USER: string
-  ADMIN_PASS: string
   TELEGRAM_TOKEN: string
   TELEGRAM_CHAT_ID: string
-  NOTION_API_KEY: string
-  NOTION_DATABASE_ID: string
-  AI: any
+  UPSTOX_API_KEY: string
+  UPSTOX_API_SECRET: string
+  REDIRECT_URI: string
 }
 
 const app = new Hono<{ Bindings: Bindings }>()
 
-// 1. Edge Security Middleware
-app.use('*', async (c, next) => {
-  const url = new URL(c.req.url)
-  // Exclude static assets and the Telegram webhook from basic auth
-  if (
-    url.pathname === '/sw.js' || 
-    url.pathname === '/manifest.json' || 
-    url.pathname.startsWith('/static/') ||
-    url.pathname === '/favicon.ico' ||
-    url.pathname === '/api/telegram-webhook'
-  ) {
-    return next()
-  }
-
-  // Intercept the Telegram Mini App URL Token and set a session cookie
-  const urlToken = c.req.query('tg_token')
-  if (urlToken === c.env.ADMIN_PASS) {
-    setCookie(c, 'auth_session', c.env.ADMIN_PASS, { 
-      path: '/', 
-      secure: true, 
-      httpOnly: true, 
-      sameSite: 'None' 
-    })
-    return next()
-  }
-
-  // Allow access if they are navigating tabs inside the Mini App
-  if (getCookie(c, 'auth_session') === c.env.ADMIN_PASS) {
-    return next()
-  }
-
-  const auth = basicAuth({ username: c.env.ADMIN_USER, password: c.env.ADMIN_PASS })
-  return auth(c, next)
-})
-
-
-// Dashboard Route
-app.get('/', async (c) => {
-  const isHX = c.req.header('HX-Request') === 'true'
-  const content = <Dashboard supabaseUrl={c.env.SUPABASE_URL} supabaseKey={c.env.SUPABASE_KEY} />
-  return c.html(isHX ? content : <Layout title="AutoBot Edge | Dashboard" currentPath="/">{content}</Layout>)
-})
-
-// Orders Route
-app.get('/orders', async (c) => {
-  const isHX = c.req.header('HX-Request') === 'true'
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-  
-  const { data: trades, error } = await supabase
-    .from('trade_log')
-    .select('*')
-    .order('id', { ascending: false })
-    .limit(100)
-
-  if (error) console.error("Supabase fetch error:", error)
-
-  const content = <Orders trades={trades || []} />
-  
-  return c.html(isHX ? content : <Layout title="AutoBot Edge | Orders" currentPath="/orders">{content}</Layout>)
-})
-
-// Statistics Route
-app.get('/statistics', async (c) => {
-  const isHX = c.req.header('HX-Request') === 'true'
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-  
-  const { data: trades, error } = await supabase
-    .from('trade_log')
-    .select('*')
-    .order('id', { ascending: true })
-
-  if (error || !trades) {
-    const errorContent = (
-      <div class="flex flex-col h-full animate-fade-in">
-        <TopBar title="System Analytics" />
-        <div class="glass-card rounded-3xl p-6">
-          <p class="text-red-400">Failed to load analytics from database.</p>
-        </div>
-      </div>
-    )
-    return c.html(isHX ? errorContent : <Layout title="Error" currentPath="/statistics">{errorContent}</Layout>)
-  }
-
-  // --- 1. Global Analytics ---
-  const totalTrades = trades.length
-  const totalPnL = trades.reduce((sum, t) => sum + (t.pnl || 0), 0)
-  const totalWins = trades.filter(t => t.pnl > 0).length
-  const winRate = totalTrades > 0 ? Math.round((totalWins / totalTrades) * 100) : 0
-
-  const ceTrades = trades.filter(t => t.position_type === 'CE')
-  const peTrades = trades.filter(t => t.position_type === 'PE')
-  const ceWinRate = ceTrades.length > 0 ? Math.round((ceTrades.filter(t => t.pnl > 0).length / ceTrades.length) * 100) : 0
-  const peWinRate = peTrades.length > 0 ? Math.round((peTrades.filter(t => t.pnl > 0).length / peTrades.length) * 100) : 0
-
-  // --- 2. Daily Bar Chart Aggregation ---
-  const dailyAggregation: Record<string, number> = {}
-  trades.forEach(t => {
-    if (!dailyAggregation[t.trade_date]) dailyAggregation[t.trade_date] = 0
-    dailyAggregation[t.trade_date] += t.pnl
-  })
-  const chartLabels = Object.keys(dailyAggregation).slice(-14)
-  const chartData = Object.values(dailyAggregation).slice(-14)
-
-  // --- 3. TIME-OF-DAY HEATMAP AGGREGATION ---
-  const timeBuckets: Record<string, { grossProfit: number, grossLoss: number, netPnl: number, wins: number, total: number }> = {}
-  
-  // Initialize standard Indian market hours (09:15 to 15:15) in 15-min buckets
-  for(let h=9; h<=15; h++) {
-      for(let m=0; m<60; m+=15) {
-          if (h===9 && m<15) continue;
-          if (h===15 && m>15) continue;
-          const bin = `${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}`;
-          timeBuckets[bin] = { grossProfit: 0, grossLoss: 0, netPnl: 0, wins: 0, total: 0 };
-      }
-  }
-
-  trades.forEach(t => {
-      // Parse HH:MM from "09:17:22"
-      const [hh, mm] = t.time.split(':').map(Number);
-      const mBin = Math.floor(mm / 15) * 15;
-      const binStr = `${hh.toString().padStart(2, '0')}:${mBin.toString().padStart(2, '0')}`;
-      
-      if(timeBuckets[binStr]) {
-          const b = timeBuckets[binStr];
-          b.total++;
-          b.netPnl += t.pnl;
-          if(t.pnl > 0) { b.grossProfit += t.pnl; b.wins++; }
-          else { b.grossLoss += Math.abs(t.pnl); }
-      }
-  });
-
-  const heatmapLabels = Object.keys(timeBuckets);
-  const heatmapStats = heatmapLabels.map(bin => {
-      const b = timeBuckets[bin];
-      // Calculate Profit Factor (PF). If no losses, cap at gross profit.
-      const pf = b.grossLoss === 0 ? (b.grossProfit > 0 ? b.grossProfit : 0) : (b.grossProfit / b.grossLoss);
-      return { 
-          pnl: b.netPnl, 
-          pf: Number(pf.toFixed(2)), 
-          wr: b.total > 0 ? Math.round((b.wins/b.total)*100) : 0,
-          total: b.total
-      };
-  });
-
-  const content = (
-    <Statistics 
-      totalTrades={totalTrades} winRate={winRate} totalPnL={totalPnL}
-      ceWinRate={ceWinRate} peWinRate={peWinRate}
-      chartLabels={chartLabels} chartData={chartData}
-      heatmapLabels={heatmapLabels} heatmapStats={heatmapStats}
-    />
-  )
-
-  return c.html(isHX ? content : <Layout title="AutoBot Edge | Statistics" currentPath="/statistics">{content}</Layout>)
-})
-
-// Simulations Route
-app.get('/simulations', async (c) => {
-  const isHX = c.req.header('HX-Request') === 'true'
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-  
-  // Fetch the historical backtest runs
-  const { data: runs, error } = await supabase
-    .from('backtest_runs')
-    .select('*')
-    .order('id', { ascending: false })
-    .limit(50)
-
-  if (error) console.error("Supabase fetch error for simulations:", error)
-
-  // Provide dummy data for UI visualization if table is empty/uncreated or query errors
-  const displayRuns = runs?.length ? runs.map(r => ({
-    id: r.id.toString(),
-    date: r.created_at ? r.created_at.split('T')[0] : (r.date ? r.date.split('T')[0] : new Date().toISOString().split('T')[0]),
-    target: typeof r.target === 'string' ? parseFloat(r.target) : (r.target || 0),
-    stop_loss: typeof r.stop_loss === 'string' ? parseFloat(r.stop_loss) : (r.stop_loss || 0),
-    trail_trigger: typeof r.trail_trigger === 'string' ? parseFloat(r.trail_trigger) : (r.trail_trigger || 0),
-    trail_dist: typeof r.trail_dist === 'string' ? parseFloat(r.trail_dist) : (r.trail_dist || 0),
-    total_trades: typeof r.total_trades === 'string' ? parseInt(r.total_trades) : (r.total_trades || 0),
-    win_rate: typeof r.win_rate === 'string' ? parseInt(r.win_rate) : (r.win_rate || 0),
-    net_pnl: typeof r.net_pnl === 'string' ? parseFloat(r.net_pnl) : (r.net_pnl || 0)
-  })) : [
-    { id: '1', date: '2026-05-24', target: 1.5, stop_loss: 2.0, trail_trigger: 2.5, trail_dist: 1.0, total_trades: 42, win_rate: 68, net_pnl: 3450.00 },
-    { id: '2', date: '2026-05-23', target: 2.0, stop_loss: 1.5, trail_trigger: 3.0, trail_dist: 1.0, total_trades: 38, win_rate: 45, net_pnl: -1200.00 },
-    { id: '3', date: '2026-05-22', target: 1.0, stop_loss: 2.5, trail_trigger: 2.0, trail_dist: 0.5, total_trades: 56, win_rate: 72, net_pnl: 5200.00 }
-  ];
-
-  const content = <Simulations runs={displayRuns} />
-
-  return c.html(isHX ? content : <Layout title="AutoBot Edge | Simulations" currentPath="/simulations">{content}</Layout>)
-})
-
-// API Endpoints
 // ==========================================
-// 🛡️ RISK MANAGEMENT API
+// 🔐 CLOUDFLARE EDGE: UPSTOX OAUTH 2.0
 // ==========================================
-app.get('/api/risk-config', async (c) => {
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-  const { data } = await supabase.from('bot_control').select('*').eq('id', 1).single()
-  
-  return c.json({
-    maxDrawdown: data?.max_drawdown ?? -1500,
-    maxConsecutiveLosses: data?.max_consecutive_losses ?? 3,
-    status: data?.status || 'ACTIVE'
-  })
+
+// 1. Initiate Login
+app.get('/auth/login', (c) => {
+  const authUrl = `https://api.upstox.com/v2/login/authorization/dialog?response_type=code&client_id=${c.env.UPSTOX_API_KEY}&redirect_uri=${encodeURIComponent(c.env.REDIRECT_URI)}`
+  return c.redirect(authUrl)
 })
 
-app.post('/api/risk-config', async (c) => {
-  const body = await c.req.json()
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
+// 2. Handle Callback & Save to Supabase
+app.get('/auth/callback', async (c) => {
+  const code = c.req.query('code')
   
-  const { error } = await supabase.from('bot_control').update({ 
-    max_drawdown: body.maxDrawdown,
-    max_consecutive_losses: body.maxConsecutiveLosses,
-    status: 'ACTIVE', // Reset status when applying new rules
-    updated_at: new Date().toISOString()
-  }).eq('id', 1)
+  if (!code) {
+    return c.text('Authorization code missing!', 400)
+  }
+
+  const url = 'https://api.upstox.com/v2/login/authorization/token'
   
-  if (error) return c.json({ status: 'error', message: error.message }, 500)
-  return c.json({ status: 'success' })
-})
-
-app.post('/api/halt', async (c) => {
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-  // Flip the PANIC command for the Python script, and set the UI status to HALTED
-  const { error } = await supabase.from('bot_control').update({ 
-    command: 'PANIC', 
-    status: 'HALTED',
-    updated_at: new Date().toISOString() 
-  }).eq('id', 1)
-  
-  if (error) return c.json({ status: 'error', message: error.message }, 500)
-  return c.json({ status: 'success' })
-})
-
-app.post('/api/panic', async (c) => {
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-  const { error } = await supabase.from('bot_control').update({ command: 'PANIC', updated_at: new Date().toISOString() }).eq('id', 1)
-  if (error) return c.json({ status: 'error', message: error.message }, 500)
-  return c.json({ status: 'success' })
-})
-
-// ==========================================
-// 🏷️ AUTOMATED EDGE AI TAGGING
-// ==========================================
-app.post('/api/tag-trade', async (c) => {
-  const { id } = await c.req.json()
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-  
-  // 1. Fetch the exact trade details
-  const { data: trade } = await supabase.from('trade_log').select('*').eq('id', id).single()
-  if (!trade) return c.json({ error: 'Trade not found' }, 404)
-
-  // 2. Strict, quantitative prompt for Llama 3
-  const prompt = `You are a high-frequency trading algorithm. Categorize this options scalp execution into exactly ONE of these tags based on the PnL and context: [BREAKOUT, REVERSION, CHOP, STOP_HUNT]. 
-  Trade Details: Type: ${trade.position_type}, Entry: ₹${trade.buy_price}, Exit: ₹${trade.sell_price}, PnL: ₹${trade.pnl}.
-  Respond ONLY with the single exact tag word. No punctuation or explanation.`
+  const formData = new URLSearchParams()
+  formData.append('code', code)
+  formData.append('client_id', c.env.UPSTOX_API_KEY)
+  formData.append('client_secret', c.env.UPSTOX_API_SECRET)
+  formData.append('redirect_uri', c.env.REDIRECT_URI)
+  formData.append('grant_type', 'authorization_code')
 
   try {
-    const aiResponse = await c.env.AI.run('@cf/meta/llama-3-8b-instruct', {
-      messages: [{ role: 'user', content: prompt }]
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded'
+      },
+      body: formData.toString()
     })
-    
-    // 3. Clean the response and enforce the categories
-    let tag = aiResponse.response.trim().toUpperCase().replace(/[^A-Z_]/g, '')
-    const validTags = ['BREAKOUT', 'REVERSION', 'CHOP', 'STOP_HUNT']
-    if (!validTags.includes(tag)) tag = 'CHOP' // Default fallback
 
-    // 4. Update the database (This will trigger a WebSocket UPDATE payload!)
-    await supabase.from('trade_log').update({ ai_tag: tag }).eq('id', id)
+    const json: any = await response.json()
+
+    if (!response.ok) {
+      return c.json({ error: 'Failed to fetch token', details: json }, response.status as any)
+    }
+
+    const token = json.access_token
+
+    // Save Token directly to Supabase
+    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
+    const { error } = await supabase.from("app_config").upsert({ key: "UPSTOX_ACCESS_TOKEN", value: token })
     
-    return c.json({ status: 'success', tag })
-  } catch (err) {
-    return c.json({ error: 'AI generation failed' }, 500)
+    if (error) {
+      return c.text(`Error saving token to Supabase: ${error.message}`, 500)
+    }
+
+    // Notify via Telegram
+    await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        chat_id: c.env.TELEGRAM_CHAT_ID, 
+        text: `✅ *Upstox Authentication Successful*\nNew API Token generated and securely stored in Supabase.`, 
+        parse_mode: 'Markdown' 
+      })
+    })
+
+    return c.html(`
+      <html>
+        <body style="font-family: sans-serif; text-align: center; margin-top: 50px; background-color: #070a13; color: white;">
+          <h2>✅ Authentication Successful!</h2>
+          <p>The Upstox Access Token has been securely stored in your Supabase database.</p>
+          <p>You can now close this window and refresh your dashboard.</p>
+        </body>
+      </html>
+    `)
+
+  } catch (err: any) {
+    return c.text(`Server Error: ${err.message}`, 500)
   }
 })
 
-app.get('/api/live-data', async (c) => {
-  c.header('Cache-Control', 'public, max-age=5')
+// ==========================================
+// 🖥️ API ENDPOINTS FOR THE DASHBOARD
+// ==========================================
+
+// Get last 40 logs from Supabase
+app.get('/api/logs', async (c) => {
   const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-  const today = new Date().toISOString().split('T')[0]
-  const { data: trades } = await supabase.from('trade_log').select('*').eq('trade_date', today).order('id', { ascending: true })
+  const { data, error } = await supabase
+    .from('sync_logs')
+    .select('*')
+    .order('created_at', { ascending: false })
+    .limit(40)
+
+  if (error) {
+    return c.json({ error: error.message }, 500)
+  }
+  return c.json(data || [])
+})
+
+// Get overall stats
+app.get('/api/stats', async (c) => {
+  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
   
-  // Fetch latest telemetry for macro_trend and capital
-  const { data: telemetry } = await supabase.from('telemetry').select('macro_trend').eq('id', 1).single()
-  const macroTrend = telemetry?.macro_trend || 'SCANNING'
+  // Get count of total MTF enabled stocks
+  const { count: total, error: err1 } = await supabase
+    .from('upstox_mtf')
+    .select('*', { count: 'exact', head: true })
+    .eq('mtf_enabled', true)
 
-  const totalTrades = trades?.length || 0
-  const wins = trades?.filter(t => t.pnl > 0).length || 0
-  const winRate = totalTrades > 0 ? Math.round((wins / totalTrades) * 100) : 0
-  const dailyPnL = trades?.reduce((sum, t) => sum + (t.pnl || 0), 0) || 0
+  // Get count of synced stocks
+  const { count: synced, error: err2 } = await supabase
+    .from('upstox_mtf')
+    .select('*', { count: 'exact', head: true })
+    .eq('mtf_enabled', true)
+    .not('ltp', 'is', null)
 
-  let cumulative = 0;
-  const chartLabels = trades?.map(t => t.time.substring(0, 5)) || [];
-  const chartData = trades?.map(t => {
-      cumulative += (t.pnl || 0);
-      return cumulative.toFixed(2);
-  }) || [];
+  if (err1 || err2) {
+    return c.json({ error: err1?.message || err2?.message }, 500)
+  }
 
-  const tableTrades = trades ? [...trades].reverse() : [];
-  return c.json({ dailyPnL: dailyPnL.toFixed(2), winRate, totalTrades, chartLabels, chartData, tableTrades, macroTrend })
+  return c.json({
+    total: total || 0,
+    synced: synced || 0
+  })
 })
 
-export async function generateDailySummary(env: Bindings, trades: any[]) {
-    if (!trades || trades.length === 0) return "No trades executed today."
-    const tradeString = trades.map(t => `${t.time} | ${t.position_type} | PnL: ₹${t.pnl}`).join('\n')
-    const prompt = `You are a quantitative trading analyst. Review the following options scalping trades for today. Keep analysis under 3 sentences, extremely concise, mentioning overall sentiment (choppy, trending) and notable drawdowns or win streaks.\n\nTrades:\n${tradeString}`
-    try {
-        const aiResponse = await env.AI.run('@cf/meta/llama-3-8b-instruct', { messages: [{ role: 'user', content: prompt }] })
-        return aiResponse.response
-    } catch (e) {
-        return "AI analysis failed to generate."
-    }
-}
-
-app.get('/api/analyze', async (c) => {
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-  const today = new Date().toISOString().split('T')[0]
-  const { data: trades } = await supabase.from('trade_log').select('*').eq('trade_date', today)
-  const summary = await generateDailySummary(c.env, trades || [])
-  return c.json({ summary })
-})
-
-app.get('/api/trigger-eod', async (c) => {
-    const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-    const today = new Date().toISOString().split('T')[0]
-    const { data: trades } = await supabase.from('trade_log').select('*').eq('trade_date', today)
-    
-    const dailyPnL = trades?.reduce((sum, t) => sum + (t.pnl || 0), 0) || 0
-    const summary = await generateDailySummary(c.env, trades || [])
-    
-    const message = `🤖 *AutoBot Edge EOD Report*\n\n*Date:* ${today}\n*Net PnL:* ₹${dailyPnL.toFixed(2)}\n*Trades:* ${trades?.length || 0}\n\n*AI Analysis:*\n${summary}`
-
-    await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_TOKEN}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chat_id: c.env.TELEGRAM_CHAT_ID, text: message, parse_mode: 'Markdown' })
-    })
-
-    return c.json({ status: 'EOD report sent to Telegram.' })
+// Trigger a manual sync from the Dashboard
+app.post('/api/sync', async (c) => {
+  c.executionCtx.waitUntil(syncMtfStocks(c.env))
+  return c.json({ success: true, message: 'Sync started in the background.' })
 })
 
 // ==========================================
-// 📱 TELEGRAM HEADLESS COMMAND CENTER
+// 📱 TELEGRAM WEBHOOK HANDLER
 // ==========================================
 app.post('/api/telegram-webhook', async (c) => {
   const update = await c.req.json()
   
-  // Ignore anything that isn't a direct text message or a callback query
-  if (!update.callback_query && (!update.message || !update.message.text)) {
+  if (!update.message || !update.message.text) {
     return c.json({ status: 'ignored' })
   }
   
-  let chatId = ""
-  let text = ""
-  
-  if (update.message && update.message.text) {
-      chatId = update.message.chat.id.toString()
-      text = update.message.text.toLowerCase()
-  } else if (update.callback_query) {
-      chatId = update.callback_query.message.chat.id.toString()
-      text = update.callback_query.data.toLowerCase()
-  }
+  const chatId = update.message.chat.id.toString()
+  const text = update.message.text.toLowerCase()
 
-  // 🛡️ Security Check: Only process commands from your personal Chat ID
   if (chatId !== c.env.TELEGRAM_CHAT_ID) {
       console.warn(`Unauthorized access attempt from Chat ID: ${chatId}`)
       return c.json({ status: 'unauthorized' }, 403)
   }
 
-  const supabase = createClient(c.env.SUPABASE_URL, c.env.SUPABASE_KEY)
-
-  // Helper function to send replies back to Telegram
   const reply = async (msg: string) => {
     await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_TOKEN}/sendMessage`, {
       method: 'POST',
@@ -404,196 +170,631 @@ app.post('/api/telegram-webhook', async (c) => {
     })
   }
 
-  // Acknowledge Telegram callback query if present to stop loading animation
-  if (update.callback_query) {
-    try {
-      await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_TOKEN}/answerCallbackQuery`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ callback_query_id: update.callback_query.id })
-      })
-    } catch (e) {}
-  }
-
   try {
-    if (text.startsWith('/panic') || text.startsWith('/halt')) {
-      await supabase.from('bot_control').update({ command: 'PANIC', status: 'HALTED', updated_at: new Date().toISOString() }).eq('id', 1)
-      await reply("🚨 *SYSTEM HALTED*\n\nAutonomous circuit breakers manually tripped via Telegram. Python engine instructed to market-sell all live positions.")
-    
-    } else if (text.startsWith('/resume')) {
-      await supabase.from('bot_control').update({ status: 'ACTIVE', updated_at: new Date().toISOString() }).eq('id', 1)
-      await reply("✅ *SYSTEM ARMED*\n\nCircuit breakers reset. Engine is scanning the microstructure.")
-
-    } else if (text.startsWith('/status')) {
-      const today = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Kolkata"})).toISOString().split('T')[0]
-      const { data: trades } = await supabase.from('trade_log').select('*').eq('trade_date', today)
-      const { data: control } = await supabase.from('bot_control').select('*').eq('id', 1).single()
-
-      const totalPnL = trades?.reduce((sum, t) => sum + (t.pnl || 0), 0) || 0
-      const wins = trades?.filter(t => t.pnl > 0).length || 0
-      const total = trades?.length || 0
-      const wr = total > 0 ? Math.round((wins / total) * 100) : 0
-
-      const msg = `📊 *Edge Terminal Snapshot*\n\n` +
-                  `⚙️ State: *${control?.status}*\n` +
-                  `💰 Net PnL: *₹${totalPnL.toFixed(2)}*\n` +
-                  `🎯 Win Rate: *${wr}%* (${wins}/${total})\n\n` +
-                  `🛡️ Risk Limit: ₹${control?.max_drawdown}\n` +
-                  `🛡️ Loss Limit: ${control?.max_consecutive_losses} consecutive`
-      await reply(msg)
-
-    } else if (text.startsWith('/start') || text.startsWith('/menu')) {
-      const workerUrl = new URL(c.req.url).origin + `/?tg_token=${c.env.ADMIN_PASS}`
-      await fetch(`https://api.telegram.org/bot${c.env.TELEGRAM_TOKEN}/sendMessage`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          chat_id: chatId, 
-          text: "⚡ *AutoBot Edge Systems Armed*\n\nSelect an option below to manage the terminal.", 
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: "📱 Open Live Terminal", web_app: { url: workerUrl } }],
-              [{ text: "📊 Quick Status", callback_data: "/status" }, { text: "🛑 KILL SWITCH", callback_data: "/panic" }]
-            ]
-          }
-        })
-      })
-
+    if (text.startsWith('/sync')) {
+      await reply("🔄 Triggering manual MTF stocks sync in the background...")
+      c.executionCtx.waitUntil(syncMtfStocks(c.env))
+    } else if (text.startsWith('/login')) {
+      const loginUrl = `${new URL(c.req.url).origin}/auth/login`
+      await reply(`🔐 *Upstox Login*\n\nClick below to authenticate your Upstox account:\n${loginUrl}`)
     } else {
-      await reply("🤖 *AutoBot Edge Commands:*\n`/status` - Live PnL & Risk Check\n`/halt` - Emergency Kill Switch\n`/resume` - Re-arm System")
+      await reply("🤖 *MTF AutoBot Commands:*\n`/login` - Generate new Upstox API Token\n`/sync` - Trigger Manual Sync")
     }
   } catch (err) {
     console.error("Telegram Webhook Error:", err)
   }
 
-  // Always return 200 to Telegram so it doesn't retry the payload
   return c.json({ status: 'success' })
 })
 
-// Helper function to push the journal to Notion
-async function createNotionJournal(env: Bindings, dateStr: string, stats: any, aiSummary: string) {
-  const notionUrl = 'https://api.notion.com/v1/pages';
-  
-  const isGreenDay = stats.netPnl >= 0;
-  const pnlColor = isGreenDay ? "green" : "red";
-  const icon = isGreenDay ? "📈" : "🩸";
-
-  const payload = {
-    parent: { database_id: env.NOTION_DATABASE_ID },
-    icon: { type: "emoji", emoji: icon },
-    properties: {
-      "Name": { title: [{ text: { content: `Session: ${dateStr}` } }] }
-    },
-    children: [
-      {
-        object: "block",
-        type: "callout",
-        callout: {
-          rich_text: [{ type: "text", text: { content: `Net PnL: ₹${stats.netPnl.toFixed(2)} | Profit Factor: ${stats.profitFactor}x | Win Rate: ${stats.winRate}%` } }],
-          icon: { emoji: "💰" },
-          color: `${pnlColor}_background`
+// ==========================================
+// 🎨 BEAUTIFUL GLASSMORPHIC HTML DASHBOARD
+// ==========================================
+app.get('/', (c) => {
+  return c.html(`
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AutoBot MTF Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #070a13;
+            --card-bg: rgba(17, 24, 39, 0.6);
+            --border-color: rgba(255, 255, 255, 0.08);
+            --text-primary: #f3f4f6;
+            --text-secondary: #9ca3af;
+            --accent-primary: #6366f1;
+            --accent-primary-hover: #4f46e5;
+            --success: #10b981;
+            --error: #ef4444;
+            --info: #3b82f6;
         }
-      },
-      {
-        object: "block",
-        type: "heading_2",
-        heading_2: { rich_text: [{ type: "text", text: { content: "🤖 Llama 3 Microstructure Analysis" } }] }
-      },
-      {
-        object: "block",
-        type: "quote",
-        quote: { rich_text: [{ type: "text", text: { content: aiSummary } }] }
-      },
-      {
-        object: "block",
-        type: "heading_3",
-        heading_3: { rich_text: [{ type: "text", text: { content: "Execution Metrics" } }] }
-      },
-      {
-        object: "block",
-        type: "bulleted_list_item",
-        bulleted_list_item: { rich_text: [{ type: "text", text: { content: `Total Executions: ${stats.totalTrades}` } }] }
-      },
-      {
-        object: "block",
-        type: "bulleted_list_item",
-        bulleted_list_item: { rich_text: [{ type: "text", text: { content: `Gross Profit: ₹${stats.grossProfit.toFixed(2)}` } }] }
-      },
-      {
-        object: "block",
-        type: "bulleted_list_item",
-        bulleted_list_item: { rich_text: [{ type: "text", text: { content: `Gross Loss: ₹${stats.grossLoss.toFixed(2)}` } }] }
-      }
-    ]
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow-x: hidden;
+            background-image: 
+                radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.05) 0%, transparent 40%),
+                radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 40%);
+        }
+
+        /* Glassmorphic Navbar */
+        .navbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 2rem;
+            background: rgba(10, 15, 30, 0.7);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border-color);
+            position: sticky;
+            top: 0;
+            z-index: 100;
+        }
+
+        .logo {
+            font-size: 1.25rem;
+            font-weight: 700;
+            background: linear-gradient(135deg, #a5b4fc 0%, #6366f1 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .status-pill {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: rgba(16, 185, 129, 0.1);
+            border: 1px solid rgba(16, 185, 129, 0.2);
+            color: var(--success);
+            padding: 0.35rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            background-color: var(--success);
+            border-radius: 50%;
+            display: inline-block;
+            box-shadow: 0 0 8px var(--success);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
+            70% { transform: scale(1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
+            100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
+        }
+
+        /* Container */
+        .container {
+            max-width: 1200px;
+            width: 100%;
+            margin: 2rem auto;
+            padding: 0 1.5rem;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 2rem;
+            flex-grow: 1;
+        }
+
+        @media (min-width: 768px) {
+            .container {
+                grid-template-columns: 350px 1fr;
+            }
+        }
+
+        /* Cards */
+        .card {
+            background: var(--card-bg);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border: 1px solid var(--border-color);
+            border-radius: 16px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.5rem;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.1);
+        }
+
+        .card-title {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 0.75rem;
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.25rem;
+            border-radius: 10px;
+            font-size: 0.95rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease-in-out;
+            text-decoration: none;
+            border: none;
+            width: 100%;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent-primary) 0%, #4f46e5 100%);
+            color: white;
+            box-shadow: 0 4px 14px rgba(99, 102, 241, 0.4);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 20px rgba(99, 102, 241, 0.6);
+        }
+
+        .btn-secondary {
+            background: rgba(255, 255, 255, 0.05);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.1);
+            transform: translateY(-2px);
+        }
+
+        .btn:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+        }
+
+        /* Stats Grid */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 1rem;
+        }
+
+        .stat-item {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid var(--border-color);
+            padding: 1rem;
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .stat-val {
+            font-size: 1.75rem;
+            font-weight: 700;
+            color: var(--text-primary);
+        }
+
+        /* Progress Bar */
+        .progress-container {
+            margin-top: 0.5rem;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 9999px;
+            height: 8px;
+            width: 100%;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, var(--accent-primary) 0%, var(--success) 100%);
+            width: 0%;
+            transition: width 0.5s ease-out;
+        }
+
+        /* Terminal View */
+        .terminal {
+            display: flex;
+            flex-direction: column;
+            background: #05070f;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 12px;
+            overflow: hidden;
+            height: 480px;
+            box-shadow: inset 0 0 20px rgba(0, 0, 0, 0.8);
+        }
+
+        .terminal-header {
+            background: #0f1220;
+            padding: 0.75rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+        }
+
+        .terminal-actions {
+            display: flex;
+            gap: 0.4rem;
+        }
+
+        .terminal-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+        }
+
+        .dot-red { background: #ef4444; }
+        .dot-yellow { background: #f59e0b; }
+        .dot-green { background: #10b981; }
+
+        .terminal-title {
+            font-family: 'Fira Code', monospace;
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }
+
+        .terminal-body {
+            flex-grow: 1;
+            padding: 1.25rem;
+            overflow-y: auto;
+            font-family: 'Fira Code', 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
+            line-height: 1.5;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            scroll-behavior: smooth;
+        }
+
+        .log-entry {
+            display: flex;
+            gap: 0.75rem;
+            animation: fadeIn 0.15s ease-out forwards;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .log-time {
+            color: #4b5563;
+            flex-shrink: 0;
+            user-select: none;
+        }
+
+        .log-text-info { color: #9ca3af; }
+        .log-text-success { color: var(--success); font-weight: 500; }
+        .log-text-error { color: var(--error); font-weight: 500; }
+
+        /* Footer */
+        .footer {
+            text-align: center;
+            padding: 1.5rem;
+            color: var(--text-secondary);
+            font-size: 0.8rem;
+            border-top: 1px solid var(--border-color);
+            margin-top: auto;
+        }
+    </style>
+</head>
+<body>
+    <nav class="navbar">
+        <div class="logo">
+            🤖 AutoBot MTF
+        </div>
+        <div class="status-pill">
+            <span class="status-dot"></span>
+            Live Edge Node
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Sidebar Controls -->
+        <div style="display: flex; flex-direction: column; gap: 1.5rem;">
+            <div class="card">
+                <div class="card-title">System Status</div>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <span class="stat-label">Total MTF Enabled</span>
+                        <span class="stat-val" id="stat-total">-</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-label">Synced Quote Data</span>
+                        <span class="stat-val" id="stat-synced">-</span>
+                        <div class="progress-container">
+                            <div class="progress-bar" id="stat-progress"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-title">Quick Actions</div>
+                <a href="/auth/login" target="_blank" class="btn btn-secondary">
+                    🔗 Authorize Upstox
+                </a>
+                <button class="btn btn-primary" id="btn-sync" onclick="triggerSync()">
+                    ⚡ Force Manual Sync
+                </button>
+            </div>
+        </div>
+
+        <!-- Terminal Output -->
+        <div class="card" style="gap: 1rem;">
+            <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+                <span>Live Event Console</span>
+                <span id="sync-status" style="font-size: 0.8rem; color: var(--text-secondary)">IDLE</span>
+            </div>
+            <div class="terminal">
+                <div class="terminal-header">
+                    <div class="terminal-actions">
+                        <div class="terminal-dot dot-red"></div>
+                        <div class="terminal-dot dot-yellow"></div>
+                        <div class="terminal-dot dot-green"></div>
+                    </div>
+                    <div class="terminal-title">bash - mtf_sync.log</div>
+                </div>
+                <div class="terminal-body" id="terminal-body">
+                    <!-- Logs will load here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <footer class="footer">
+        AutoBot Edge • Running serverless on Cloudflare Workers
+    </footer>
+
+    <script>
+        let isSyncing = false;
+
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+                document.getElementById('stat-total').textContent = data.total;
+                document.getElementById('stat-synced').textContent = data.synced;
+                
+                const percent = data.total > 0 ? (data.synced / data.total) * 100 : 0;
+                document.getElementById('stat-progress').style.width = percent + '%';
+            } catch (err) {
+                console.error("Failed to fetch stats", err);
+            }
+        }
+
+        async function fetchLogs() {
+            try {
+                const res = await fetch('/api/logs');
+                const logs = await res.json();
+                const terminal = document.getElementById('terminal-body');
+                
+                const shouldScroll = terminal.scrollHeight - terminal.scrollTop <= terminal.clientHeight + 40;
+                
+                terminal.innerHTML = '';
+                if (logs.length === 0) {
+                    terminal.innerHTML = '<div style="color: var(--text-secondary); text-align: center; margin-top: 2rem;">No events logged in the last 24h</div>';
+                    return;
+                }
+
+                // Reverse logs to display oldest at top, newest at bottom (standard terminal style)
+                [...logs].reverse().forEach(log => {
+                    const time = new Date(log.created_at).toLocaleTimeString();
+                    const entry = document.createElement('div');
+                    entry.className = 'log-entry';
+                    
+                    let statusClass = 'log-text-info';
+                    if (log.status === 'success') statusClass = 'log-text-success';
+                    if (log.status === 'error') statusClass = 'log-text-error';
+
+                    entry.innerHTML = \`
+                        <span class="log-time">[\${time}]</span>
+                        <span class="\${statusClass}">\${escapeHtml(log.message)}</span>
+                    \`;
+                    terminal.appendChild(entry);
+                });
+
+                if (shouldScroll) {
+                    terminal.scrollTop = terminal.scrollHeight;
+                }
+            } catch (err) {
+                console.error("Failed to fetch logs", err);
+            }
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#039;");
+        }
+
+        async function triggerSync() {
+            const btn = document.getElementById('btn-sync');
+            const status = document.getElementById('sync-status');
+            
+            btn.disabled = true;
+            btn.textContent = '🔄 Syncing...';
+            status.textContent = 'SYNCING';
+            status.style.color = 'var(--accent-primary)';
+            
+            try {
+                const res = await fetch('/api/sync', { method: 'POST' });
+                const data = await res.json();
+                
+                // Instantly poll logs and stats
+                await fetchLogs();
+                await fetchStats();
+            } catch (err) {
+                console.error("Sync trigger failed", err);
+            } finally {
+                // Keep disabled briefly to avoid spamming
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.textContent = '⚡ Force Manual Sync';
+                    status.textContent = 'IDLE';
+                    status.style.color = 'var(--text-secondary)';
+                }, 3000);
+            }
+        }
+
+        // Initialize and setup polling
+        fetchStats();
+        fetchLogs();
+        setInterval(fetchStats, 5000);
+        setInterval(fetchLogs, 2000);
+    </script>
+</body>
+</html>
+  `)
+})
+
+// ==========================================
+// 🔄 CORE SYNC LOGIC
+// ==========================================
+async function syncMtfStocks(env: Bindings) {
+  const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_KEY);
+
+  const log = async (msg: string, status: 'info' | 'success' | 'error') => {
+    console.log(`[${status.toUpperCase()}] ${msg}`);
+    await supabase.from('sync_logs').insert({ message: msg, status });
   };
 
-  await fetch(notionUrl, {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${env.NOTION_API_KEY}`,
-      'Content-Type': 'application/json',
-      'Notion-Version': '2022-06-28'
-    },
-    body: JSON.stringify(payload)
-  });
+  await log("🔄 Commencing Live MTF Stocks Update...", "info");
+
+  try {
+    // Keep logs table tidy - clean logs older than 1 day
+    const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    await supabase.from('sync_logs').delete().lt('created_at', oneDayAgo);
+
+    // 1. Get the Upstox Access Token
+    const { data: configData, error: configError } = await supabase
+      .from('app_config')
+      .select('value')
+      .eq('key', 'UPSTOX_ACCESS_TOKEN')
+      .single();
+    
+    if (configError || !configData) {
+      await log("❌ Failed to fetch UPSTOX_ACCESS_TOKEN from Supabase", "error");
+      return;
+    }
+    const accessToken = configData.value;
+    await log("🔑 Upstox Access Token retrieved successfully", "info");
+
+    // 2. Fetch all instrument keys from upstox_mtf
+    const { data: stocks, error: mtfError } = await supabase
+      .from('upstox_mtf')
+      .select('instrument_key')
+      .eq('mtf_enabled', true);
+
+    if (mtfError || !stocks) {
+      await log(`❌ Failed to fetch MTF stocks: ${mtfError?.message}`, "error");
+      return;
+    }
+    await log(`📈 Found ${stocks.length} MTF enabled stocks to sync`, "info");
+
+    // 3. Batch into chunks of 500 (Upstox Limit)
+    const chunkSize = 500;
+    let totalUpdated = 0;
+
+    for (let i = 0; i < stocks.length; i += chunkSize) {
+      const chunk = stocks.slice(i, i + chunkSize);
+      const keys = chunk.map(s => s.instrument_key).join(',');
+      
+      await log(`📡 Fetching LTP batch ${Math.floor(i / chunkSize) + 1} of ${Math.ceil(stocks.length / chunkSize)}...`, "info");
+
+      // 4. Call Upstox API (LTP V3)
+      const response = await fetch(`https://api.upstox.com/v3/market-quote/ltp?instrument_key=${encodeURIComponent(keys)}`, {
+        headers: {
+          'Accept': 'application/json',
+          'Authorization': `Bearer ${accessToken}`
+        }
+      });
+      
+      if (!response.ok) {
+        await log(`❌ Upstox API error for batch: ${response.status} ${response.statusText}`, "error");
+        continue;
+      }
+
+      const json: any = await response.json();
+      if (json.status !== 'success') {
+        await log("❌ Upstox API returned error status for batch", "error");
+        continue;
+      }
+
+      // 5. Prepare Payload for Bulk Update RPC
+      const updatePayload = [];
+      for (const key of Object.keys(json.data)) {
+        const item = json.data[key];
+        updatePayload.push({
+          instrument_key: item.instrument_token,
+          ltp: item.last_price,
+          volume: item.volume,
+          previous_close_price: item.cp
+        });
+      }
+
+      // 6. Push to Supabase using RPC function
+      if (updatePayload.length > 0) {
+        const { error: rpcError } = await supabase.rpc('bulk_update_mtf', { payload: updatePayload });
+        if (rpcError) {
+          await log(`❌ Supabase RPC error: ${rpcError.message}`, "error");
+        } else {
+          await log(`✅ Successfully updated ${updatePayload.length} stocks in this batch`, "info");
+          totalUpdated += updatePayload.length;
+        }
+      }
+    }
+    
+    await log(`🎉 Sync Complete! Total updated stocks: ${totalUpdated}`, "success");
+
+    // 7. Send a summary to Telegram
+    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ 
+        chat_id: env.TELEGRAM_CHAT_ID, 
+        text: `✅ *Live Data Sync Complete*\nUpdated ${totalUpdated} MTF enabled stocks successfully.`, 
+        parse_mode: 'Markdown' 
+      })
+    });
+
+  } catch (e: any) {
+    await log(`❌ Scheduled task failed: ${e.message}`, "error");
+  }
 }
 
 // ==========================================
 // ⏰ CLOUDFLARE CRON TRIGGER EXPORT
 // ==========================================
 export default {
-  // Pass the standard HTTP requests to Hono
   fetch: app.fetch,
   
-  // Handle the automated 3:45 PM Cron Trigger
   async scheduled(event: any, env: Bindings, ctx: any) {
-    console.log("⏰ Commencing End-of-Day Journal Generation...");
-    
-    const supabase = createClient(env.SUPABASE_URL, env.SUPABASE_KEY);
-    const today = new Date(new Date().toLocaleString("en-US", {timeZone: "Asia/Kolkata"})).toISOString().split('T')[0];
-
-    // 1. Fetch Today's Log
-    const { data: trades } = await supabase.from('trade_log').select('*').eq('trade_date', today);
-    if (!trades || trades.length === 0) return;
-
-    // 2. Crunch the Math
-    const totalTrades = trades.length;
-    const wins = trades.filter(t => t.pnl > 0).length;
-    const winRate = Math.round((wins / totalTrades) * 100);
-    const netPnl = trades.reduce((sum, t) => sum + t.pnl, 0);
-    
-    const grossProfit = trades.filter(t => t.pnl > 0).reduce((sum, t) => sum + t.pnl, 0);
-    const grossLoss = Math.abs(trades.filter(t => t.pnl < 0).reduce((sum, t) => sum + t.pnl, 0));
-    const profitFactor = grossLoss === 0 ? (grossProfit > 0 ? grossProfit : 0).toFixed(2) : (grossProfit / grossLoss).toFixed(2);
-
-    const stats = { totalTrades, winRate, netPnl, grossProfit, grossLoss, profitFactor };
-
-    // 3. Generate Llama 3 Summary
-    const tradeString = trades.map(t => `[${t.time.substring(0,5)}] ${t.ai_tag || 'TRADE'} | PnL: ₹${t.pnl}`).join('\n');
-    const prompt = `You are an institutional trading analyst. Review today's executions. Provide a max 3-sentence summary of the market microstructure based on these trades. Mention significant chop, breakouts, or drawdowns.
-    
-    Trades:
-    ${tradeString}`;
-
-    let aiSummary = "AI Analysis unavailable.";
-    try {
-      const aiResponse = await env.AI.run('@cf/meta/llama-3-8b-instruct', {
-        messages: [{ role: 'user', content: prompt }]
-      });
-      aiSummary = aiResponse.response.trim();
-    } catch (e) {
-      console.error("Llama 3 inference failed.");
-    }
-
-    // 4. Push to Notion and Send Telegram Confirmation
-    await createNotionJournal(env, today, stats, aiSummary);
-    
-    const tgMessage = `📔 *Notion Journal Created*\n\n💰 Net PnL: ₹${netPnl.toFixed(2)}\n📊 Profit Factor: ${profitFactor}x\n\nThe full session breakdown and AI analysis has been archived in your workspace.`;
-    await fetch(`https://api.telegram.org/bot${env.TELEGRAM_TOKEN}/sendMessage`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chat_id: env.TELEGRAM_CHAT_ID, text: tgMessage, parse_mode: 'Markdown' })
-    });
+    ctx.waitUntil(syncMtfStocks(env));
   }
 }
